@@ -1,0 +1,31 @@
+# Enable or disable the entire module
+AuctionSim.Enabled = 0
+
+# Bot account id
+AuctionSim.BotAccountID = 0
+# Bot character id
+AuctionSim.BotCharacterID = 0
+
+# Time in minutes between auction house operations
+AuctionSim.UpdateInterval = 60
+
+# The percent of items in each category to list on the AH as a 4 digit number.
+# For example, 0050 is 50%
+# If you want duplicates set a value higher than 0100
+AuctionSim.ConsumablePercent    = GREY: 0000, WHITE: 0100, GREEN: 0050, BLUE: 0050, PURPLE: 0020, YELLOW: 0000
+AuctionSim.ContainerPercent     = GREY: 0000, WHITE: 0300, GREEN: 0200, BLUE: 0200, PURPLE: 0020, YELLOW: 0000
+AuctionSim.WeaponPercent        = GREY: 0000, WHITE: 0000, GREEN: 0010, BLUE: 0010, PURPLE: 0020, YELLOW: 0000
+AuctionSim.GemPercent           = GREY: 0000, WHITE: 0050, GREEN: 0050, BLUE: 0050, PURPLE: 0020, YELLOW: 0000
+AuctionSim.ArmorPercent         = GREY: 0000, WHITE: 0000, GREEN: 0001, BLUE: 0001, PURPLE: 0001, YELLOW: 0000
+AuctionSim.ReagentPercent       = GREY: 0000, WHITE: 0000, GREEN: 0000, BLUE: 0000, PURPLE: 0000, YELLOW: 0000
+AuctionSim.ProjectilePercent    = GREY: 0000, WHITE: 0000, GREEN: 0300, BLUE: 0300, PURPLE: 0300, YELLOW: 0000
+AuctionSim.TradeGoodsPercent    = GREY: 0000, WHITE: 0500, GREEN: 0500, BLUE: 0500, PURPLE: 0500, YELLOW: 0500
+AuctionSim.GenericPercent       = GREY: 0000, WHITE: 0300, GREEN: 0000, BLUE: 0000, PURPLE: 0000, YELLOW: 0000
+AuctionSim.RecipePercent        = GREY: 0000, WHITE: 0010, GREEN: 0010, BLUE: 0010, PURPLE: 0010, YELLOW: 0000
+AuctionSim.MoneyPercent         = GREY: 0000, WHITE: 0000, GREEN: 0000, BLUE: 0000, PURPLE: 0000, YELLOW: 0000
+AuctionSim.QuiverPercent        = GREY: 0000, WHITE: 0000, GREEN: 0000, BLUE: 0000, PURPLE: 0000, YELLOW: 0000
+AuctionSim.QuestPercent         = GREY: 0000, WHITE: 0050, GREEN: 0050, BLUE: 0030, PURPLE: 0010, YELLOW: 0000
+AuctionSim.KeyPercent           = GREY: 0000, WHITE: 0020, GREEN: 0000, BLUE: 0000, PURPLE: 0000, YELLOW: 0000
+AuctionSim.PermanentPercent     = GREY: 0000, WHITE: 0000, GREEN: 0000, BLUE: 0000, PURPLE: 0000, YELLOW: 0000
+AuctionSim.MiscPercent          = GREY: 0000, WHITE: 0030, GREEN: 0030, BLUE: 0010, PURPLE: 0010, YELLOW: 0000
+AuctionSim.GlyphPercent         = GREY: 0000, WHITE: 0030, GREEN: 0000, BLUE: 0000, PURPLE: 0000, YELLOW: 0000
