@@ -1,4 +1,4 @@
-AuctionSim: a module for Azerothcore
+# AuctionSim: A Module For Azerothcore
 
 AuctionSim uses scraped price data from the Lordaeron WoTLK realm on Warmane and uses it to populate your own auction house. The module can both buy and sell and does not have the same limitaions the classic AuctionHouseBot module does. It does not have any categories of items that it misses and the prices are not based on the vendor sell price. It uses different price tables for both Horde and Alliance (no neutral) and is heavily customizable in the config so you can mold how your auction house looks to your whims. It is fast and can list over 100,000 items on the auction house in 200ms.
 
