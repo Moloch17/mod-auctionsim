@@ -1,7 +1,7 @@
-#include "ASConfig.h"
+#include "Config.h"
 #include <cstddef>
 #include <filesystem>
-#include "Config.h"
+#include "ASConfig.h"
 #include "ObjectMgr.h"
 #include "ScannedItem.h"
 

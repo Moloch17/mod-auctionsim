@@ -3,7 +3,7 @@ AuctionSim.Enabled = 0
 
 # Bot account id
 AuctionSim.BotAccountID = 0
-# Bot character id
+# Bot character guid
 AuctionSim.BotCharacterID = 0
 
 # Time in minutes between auction house operations

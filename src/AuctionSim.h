@@ -1,10 +1,8 @@
 #pragma once
 #include <memory>
-#include <vector>
 #include "ASConfig.h"
 #include "AuctionHouseMgr.h"
 #include "Bot.h"
-#include "ObjectGuid.h"
 #include "Player.h"
 #include "ScriptMgr.h"
 

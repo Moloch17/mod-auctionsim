@@ -3,10 +3,13 @@
 #include <string>
 #include "ASConfig.h"
 #include "AuctionHouseMgr.h"
+#include "AuctionHouseSearcher.h"
 #include "Bot.h"
+#include "DatabaseEnvFwd.h"
 #include "Define.h"
 #include "Log.h"
 #include "Mail.h"
+#include "ScriptMgr.h"
 
 AuctionSim* AuctionSim::_instance = nullptr;
 
@@ -82,30 +85,19 @@ void AuctionSim::ScanAuctions(AuctionHouseId _id, bool _DataFactionID)
             {
                 AuctionEntry* auction = it->second;
                 auto trans = CharacterDatabase.BeginTransaction();
-
-                // Remove auction from the auction house
-                sAuctionMgr->GetAuctionsMapByHouseId(_id)->RemoveAuction(auction);
-
-                // Remove the item from auction manager
-                sAuctionMgr->RemoveAItem(auction->item_guid, false, &trans);
-
-                // Set the bot as the bidder/winner
                 auction->bidder = bot->GetPlayer().get()->GetGUID();
                 auction->bid = auction->buyout;
-
-                // Send auction successful mail to seller (with the gold)
+                sAuctionMgr->GetAuctionHouseSearcher()->UpdateBid(auction);
                 sAuctionMgr->SendAuctionSuccessfulMail(auction, trans, true, true, true);
-
-                // Delete the auction from the database
                 auction->DeleteFromDB(trans);
-
-                // Remove from auction house (this will also delete the auction pointer)
+                sAuctionMgr->RemoveAItem(auction->item_guid);
                 sAuctionMgr->GetAuctionsMapByHouseId(_id)->RemoveAuction(auction);
-
                 CharacterDatabase.CommitTransaction(trans);
             }
         }
     }
+
+    // If we don't buy, we figure out if we want to list it
     for (int i = 0; i < MAX_ITEM_CLASS; i++)
     {
         for (int j = 0; j < MAX_ITEM_QUALITY; j++)
@@ -144,7 +136,6 @@ void AuctionSim::ScanAuctions(AuctionHouseId _id, bool _DataFactionID)
 
                 int buyout = qty * ((std::rand() % (int)(scan->GetMeanPrice() * 0.3f)) + scan->GetMeanPrice() * 0.8f);
 
-                // Create the item
                 Item* item =
                     Item::CreateItem(scan->GetItemID(), qty, bot->GetPlayer().get(), false, scan->GetSuffixID());
                 item->AddToUpdateQueueOf(bot->GetPlayer().get());
@@ -157,7 +148,7 @@ void AuctionSim::ScanAuctions(AuctionHouseId _id, bool _DataFactionID)
                 auction->item_template = item->GetEntry();
                 auction->itemCount = qty;
                 auction->owner = bot->GetPlayer().get()->GetGUID();
-                auction->startbid = 0;
+                auction->startbid = buyout;
                 auction->buyout = buyout;
                 auction->bid = 0;
                 auction->deposit = 0;
@@ -165,7 +156,6 @@ void AuctionSim::ScanAuctions(AuctionHouseId _id, bool _DataFactionID)
                 auction->expire_time = std::time(nullptr) + time;
                 auction->auctionHouseEntry = sAuctionMgr->GetAuctionHouseEntryFromHouse(_id);
 
-                // Save to database
                 auto trans = CharacterDatabase.BeginTransaction();
                 item->SaveToDB(trans);
                 item->RemoveFromUpdateQueueOf(bot->GetPlayer().get());
