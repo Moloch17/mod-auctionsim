@@ -1,15 +1,18 @@
 #include "AuctionSim.h"
+#include <filesystem>
 #include <memory>
 #include <string>
 #include "ASConfig.h"
 #include "AuctionHouseMgr.h"
 #include "AuctionHouseSearcher.h"
 #include "Bot.h"
+#include "Config.h"
 #include "DatabaseEnvFwd.h"
 #include "Define.h"
 #include "Log.h"
 #include "Mail.h"
 #include "ScriptMgr.h"
+#include "WorldConfig.h"
 
 AuctionSim* AuctionSim::_instance = nullptr;
 
@@ -29,11 +32,21 @@ void AuctionSim::OnStartup()
 
     bot = std::make_unique<Bot>(this->isEnabled);
 
-    config = std::make_unique<ASConfig>("env/dist/etc/modules/auctionsim.dat", isEnabled);
+    std::string path = sConfigMgr->GetConfigPath() + "/modules/auctionsim.dat";
+
+    LOG_WARN("module", path);
+    config = std::make_unique<ASConfig>(path, isEnabled);
 
     if (config->updateInterval == 0)
     {
-        LOG_WARN("module", "AuctionSim: UpdateInterval cannot be 0");
+        LOG_ERROR("module", "AuctionSim: UpdateInterval cannot be 0");
+        isEnabled = false;
+        return;
+    }
+
+    if (ServerConfigs::CONFIG_ALLOW_TWO_SIDE_INTERACTION_AUCTION == 1)
+    {
+        LOG_ERROR("module", "AuctionSim: Two sided auction interaction is not allowed");
         isEnabled = false;
         return;
     }
@@ -65,9 +78,6 @@ void AuctionSim::ScanAuctions(AuctionHouseId _id, bool _DataFactionID)
         auctionTable[proto->Class][proto->Quality]++;
         if (it->second->owner != bot->GetPlayer().get()->GetGUID())
         {
-            // check if price is within buy range
-            int pricePerItem = it->second->buyout / it->second->itemCount;
-
             // Check if we have any data on the item
             ScannedItem* scannedItem = nullptr;
             for (ScannedItem*& item : config->ItemSelectionTable[_DataFactionID][proto->Class][proto->Quality])
@@ -77,10 +87,12 @@ void AuctionSim::ScanAuctions(AuctionHouseId _id, bool _DataFactionID)
                     scannedItem = item;
                 }
             }
-
             if (!scannedItem) continue;
 
+            int pricePerItem = it->second->buyout / it->second->itemCount;
+
             // Buy item if price is under mean price
+            // TO DO: add buy threshold to the config
             if (pricePerItem <= scannedItem->GetMeanPrice())
             {
                 AuctionEntry* auction = it->second;
