@@ -34,7 +34,6 @@ void AuctionSim::OnStartup()
 
     std::string path = sConfigMgr->GetConfigPath() + "/modules/auctionsim.dat";
 
-    LOG_WARN("module", path);
     config = std::make_unique<ASConfig>(path, isEnabled);
 
     if (config->updateInterval == 0)
