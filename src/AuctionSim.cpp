@@ -87,8 +87,7 @@ void AuctionSim::ScanAuctions(AuctionHouseId _id, bool _DataFactionID)
                 auto trans = CharacterDatabase.BeginTransaction();
                 auction->bidder = bot->GetPlayer().get()->GetGUID();
                 auction->bid = auction->buyout;
-                sAuctionMgr->GetAuctionHouseSearcher()->UpdateBid(auction);
-                sAuctionMgr->SendAuctionSuccessfulMail(auction, trans, true, true, true);
+                sAuctionMgr->SendAuctionSuccessfulMail(auction, trans);
                 auction->DeleteFromDB(trans);
                 sAuctionMgr->RemoveAItem(auction->item_guid);
                 sAuctionMgr->GetAuctionsMapByHouseId(_id)->RemoveAuction(auction);
