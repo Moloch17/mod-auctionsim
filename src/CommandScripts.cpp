@@ -22,6 +22,11 @@ public:
 
     static bool HandleScanAuctionsCommand(ChatHandler* handler)
     {
+        if (!AuctionSim::instance()->isEnabled)
+        {
+            handler->SendSysMessage("AuctionSim module is disabled.");
+            return true;
+        }
         Player* player = nullptr;
         if (handler->GetSession()) player = handler->GetSession()->GetPlayer();
 
@@ -38,6 +43,11 @@ public:
 
     static bool HandleDeleteAuctionsCommand(ChatHandler* handler)
     {
+        if (!AuctionSim::instance()->isEnabled)
+        {
+            handler->SendSysMessage("AuctionSim module is disabled.");
+            return true;
+        }
         Player* player = nullptr;
         if (handler->GetSession()) player = handler->GetSession()->GetPlayer();
 

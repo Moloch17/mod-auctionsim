@@ -49,20 +49,25 @@ void AuctionSim::OnStartup()
         isEnabled = false;
         return;
     }
+
+    if (sConfigMgr->GetOption<bool>("AuctionSim.StartupScan", false))
+    {
+        ScanAuctions(AuctionHouseId::Alliance, 0);
+        ScanAuctions(AuctionHouseId::Horde, 1);
+        LOG_INFO("module", "AuctionSim: Startup complete");
+    }
 }
 
 void AuctionSim::OnUpdate(uint32 diff)
 {
     if (!this->isEnabled) return;
 
-    static uint32 scanTimer = 0;
     scanTimer += diff;
 
     if (scanTimer >= config->updateInterval * 60000)
     {
         ScanAuctions(AuctionHouseId::Alliance, 0);
         ScanAuctions(AuctionHouseId::Horde, 1);
-
         scanTimer = 0;
     }
 }
@@ -71,6 +76,9 @@ void AuctionSim::ScanAuctions(AuctionHouseId _id, bool _DataFactionID)
 {
     auto map = sAuctionMgr->GetAuctionsMapByHouseId(_id)->GetAuctions();
     int auctionTable[MAX_ITEM_CLASS][MAX_ITEM_QUALITY] = {};
+
+    auto trans = CharacterDatabase.BeginTransaction();
+
     for (auto it = map.begin(); it != map.end(); ++it)
     {
         const ItemTemplate* proto = sObjectMgr->GetItemTemplate(it->second->item_template);
@@ -95,14 +103,12 @@ void AuctionSim::ScanAuctions(AuctionHouseId _id, bool _DataFactionID)
             if (pricePerItem <= scannedItem->GetMeanPrice())
             {
                 AuctionEntry* auction = it->second;
-                auto trans = CharacterDatabase.BeginTransaction();
                 auction->bidder = bot->GetPlayer().get()->GetGUID();
                 auction->bid = auction->buyout;
                 sAuctionMgr->SendAuctionSuccessfulMail(auction, trans);
                 auction->DeleteFromDB(trans);
                 sAuctionMgr->RemoveAItem(auction->item_guid);
                 sAuctionMgr->GetAuctionsMapByHouseId(_id)->RemoveAuction(auction);
-                CharacterDatabase.CommitTransaction(trans);
             }
         }
     }
@@ -166,17 +172,16 @@ void AuctionSim::ScanAuctions(AuctionHouseId _id, bool _DataFactionID)
                 auction->expire_time = std::time(nullptr) + time;
                 auction->auctionHouseEntry = sAuctionMgr->GetAuctionHouseEntryFromHouse(_id);
 
-                auto trans = CharacterDatabase.BeginTransaction();
                 item->SaveToDB(trans);
                 item->RemoveFromUpdateQueueOf(bot->GetPlayer().get());
                 sAuctionMgr->AddAItem(item);
                 sAuctionMgr->GetAuctionsMapByHouseId(_id)->AddAuction(auction);
                 auction->SaveToDB(trans);
-                CharacterDatabase.CommitTransaction(trans);
                 itemsToPick--;
             }
         }
     }
+    CharacterDatabase.CommitTransaction(trans);
 }
 
 void AuctionSim::DeleteAuctions(Player* player)

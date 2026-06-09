@@ -1,6 +1,6 @@
 # AuctionSim: A Module For Azerothcore WoTLK 3.3.5a
 
-AuctionSim uses scraped price data from the Lordaeron WoTLK realm on Warmane and uses it to populate your own auction house. The module can both buy and sell and does not have the same limitaions the classic ah-bot module does. It does not have any categories of items that it misses and the prices are not based on the vendor sell price. It uses different price tables for both Horde and Alliance (no neutral) and is heavily customizable in the config so you can mold how your auction house looks to your whims. It is fast and can list over 100,000 items in 200ms. 
+AuctionSim uses scraped price data from the Lordaeron WoTLK realm on Warmane and uses it to populate your own auction house. The module can both buy and sell and does not have the same limitaions the classic ah-bot module does. It does not have any categories of items that it misses and the prices are not based on the vendor sell price. It uses different price tables for both Horde and Alliance (no neutral) and is heavily customizable in the config so you can mold how your auction house looks to your whims. It is fast and can list over 100,000 items in under 100ms. 
 
 # Installation:
 
@@ -18,7 +18,7 @@ Everything else is pre-configured and won't need to be edited unless you want to
 
 # Usage:
 
-By default the module scans the auction house every hour to list and buy items. You can use the command .scan to run the scan manually and .delete to delete all the bot-created auctions on the auction house.
+By default the module scans the auction house at server start and every hour afterward to list and buy items. You can use the command .scan to run the scan manually and .delete to delete all the bot-created auctions on the auction house.
 
 # Known issues and future plans:
 

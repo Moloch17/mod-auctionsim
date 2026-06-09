@@ -3,11 +3,15 @@ AuctionSim.Enabled = 0
 
 # Bot account id
 AuctionSim.BotAccountID = 0
+
 # Bot character guid
 AuctionSim.BotCharacterID = 0
 
 # Time in minutes between auction house operations
 AuctionSim.UpdateInterval = 60
+
+# Do a scan on server startup
+AuctionSim.StartupScan = 1
 
 # The percent of items in each category to list on the AH as a 4 digit number.
 # For example, 0050 is 50%

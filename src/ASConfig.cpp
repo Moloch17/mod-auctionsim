@@ -36,7 +36,7 @@ ASConfig::ASConfig(std::string _filepath, bool& _isEnabled)
         this->ScanData.emplace_back(ScannedItem(line));
     }
 
-    LOG_INFO("module", "AuctionSim loaded prices for {} items", this->ScanData.size());
+    LOG_INFO("module", "AuctionSim: loaded prices for {} items", this->ScanData.size());
 
     for (int _itemClass = 0; _itemClass < MAX_ITEM_CLASS; _itemClass++)
     {

@@ -18,12 +18,13 @@ public:
     void OnUpdate(uint32 diff) override;
     void ScanAuctions(AuctionHouseId _id, bool _DataFactionID);
     void DeleteAuctions(Player* player);
-
+    bool isEnabled;
+    
 private:
     static AuctionSim* _instance;
-    bool isEnabled;
     std::unique_ptr<Bot> bot;
     std::unique_ptr<ASConfig> config;
+    uint32 scanTimer = 0;
 };
 class AuctionSimMailManager : public MailScript
 {
