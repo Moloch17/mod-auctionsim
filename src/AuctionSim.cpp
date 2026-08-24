@@ -1,10 +1,10 @@
 #include "AuctionSim.h"
-#include <filesystem>
 #include <memory>
 #include <string>
 #include "ASConfig.h"
 #include "AuctionHouseMgr.h"
 #include "AuctionHouseSearcher.h"
+#include "AuctionPricing.h"
 #include "Bot.h"
 #include "Config.h"
 #include "DatabaseEnvFwd.h"
@@ -31,15 +31,16 @@ void AuctionSim::OnStartup()
     }
 
     bot = std::make_unique<Bot>(this->isEnabled);
+    if (!isEnabled)
+    {
+        return;
+    }
 
     std::string path = sConfigMgr->GetConfigPath() + "/modules/auctionsim.dat";
 
     config = std::make_unique<ASConfig>(path, isEnabled);
-
-    if (config->updateInterval == 0)
+    if (!isEnabled)
     {
-        LOG_ERROR("module", "AuctionSim: UpdateInterval cannot be 0");
-        isEnabled = false;
         return;
     }
 
@@ -50,10 +51,13 @@ void AuctionSim::OnStartup()
         return;
     }
 
+    listingService = std::make_unique<AuctionListingService>(*bot, *config);
+    buyingService = std::make_unique<AuctionBuyingService>(*bot);
+
     if (sConfigMgr->GetOption<bool>("AuctionSim.StartupScan", false))
     {
-        ScanAuctions(AuctionHouseId::Alliance, 0);
-        ScanAuctions(AuctionHouseId::Horde, 1);
+        ScanAuctions(AuctionHouseId::Alliance);
+        ScanAuctions(AuctionHouseId::Horde);
         LOG_INFO("module", "AuctionSim: Startup complete");
     }
 }
@@ -64,127 +68,130 @@ void AuctionSim::OnUpdate(uint32 diff)
 
     scanTimer += diff;
 
-    if (scanTimer >= config->updateInterval * 60000)
+    if (scanTimer >= AuctionPricing::kScanIntervalSeconds * 1000)
     {
-        ScanAuctions(AuctionHouseId::Alliance, 0);
-        ScanAuctions(AuctionHouseId::Horde, 1);
+        ScanAuctions(AuctionHouseId::Alliance);
+        ScanAuctions(AuctionHouseId::Horde);
         scanTimer = 0;
     }
+
+    buyingService->ProcessDueQueue();
 }
 
-void AuctionSim::ScanAuctions(AuctionHouseId _id, bool _DataFactionID)
+void AuctionSim::ScanAuctions(AuctionHouseId _AuctionHouseId)
 {
-    auto map = sAuctionMgr->GetAuctionsMapByHouseId(_id)->GetAuctions();
+    auto map = sAuctionMgr->GetAuctionsMapByHouseId(_AuctionHouseId)->GetAuctions();
     int auctionTable[MAX_ITEM_CLASS][MAX_ITEM_QUALITY] = {};
 
-    auto trans = CharacterDatabase.BeginTransaction();
+    buyingService->RollTolerance();
 
     for (auto it = map.begin(); it != map.end(); ++it)
     {
-        const ItemTemplate* proto = sObjectMgr->GetItemTemplate(it->second->item_template);
+        AuctionEntry* auction = it->second;
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(auction->item_template);
+        if (!proto)
+        {
+            LOG_WARN(
+                "module",
+                "AuctionSim: auction {} references item {} not found in item_template, skipping",
+                auction->Id,
+                auction->item_template);
+            continue;
+        }
+
         auctionTable[proto->Class][proto->Quality]++;
-        if (it->second->owner != bot->GetPlayer().get()->GetGUID())
+
+        if (auction->owner == bot->GetPlayer().get()->GetGUID())
         {
-            // Check if we have any data on the item
-            ScannedItem* scannedItem = nullptr;
-            for (ScannedItem*& item : config->ItemSelectionTable[_DataFactionID][proto->Class][proto->Quality])
-            {
-                if (item->GetItemID() == it->second->item_template)
-                {
-                    scannedItem = item;
-                }
-            }
-            if (!scannedItem) continue;
-
-            int pricePerItem = it->second->buyout / it->second->itemCount;
-
-            // Buy item if price is under mean price
-            // TO DO: add buy threshold to the config
-            if (pricePerItem <= scannedItem->GetMeanPrice())
-            {
-                AuctionEntry* auction = it->second;
-                auction->bidder = bot->GetPlayer().get()->GetGUID();
-                auction->bid = auction->buyout;
-                sAuctionMgr->SendAuctionSuccessfulMail(auction, trans);
-                auction->DeleteFromDB(trans);
-                sAuctionMgr->RemoveAItem(auction->item_guid);
-                sAuctionMgr->GetAuctionsMapByHouseId(_id)->RemoveAuction(auction);
-            }
+            continue;
         }
+
+        ScannedItem const* scannedItem =
+            config->FindScannedItem(_AuctionHouseId, proto->Class, proto->Quality, auction->item_template);
+        if (!scannedItem)
+        {
+            continue;
+        }
+
+        uint32 pricePerItem = auction->buyout / auction->itemCount;
+        buyingService->ConsiderForPurchase(
+            auction, pricePerItem, scannedItem->GetMeanPrice(), scannedItem->GetMaxPrice());
     }
 
-    // If we don't buy, we figure out if we want to list it
-    for (int i = 0; i < MAX_ITEM_CLASS; i++)
-    {
-        for (int j = 0; j < MAX_ITEM_QUALITY; j++)
-        {
-            if (config->ItemSelectionMask[i][j] == 0) continue;
-            if (config->ItemSelectionTable[_DataFactionID][i][j].size() == 0) continue;
+    buyingService->SortQueue();
 
-            int itemsWanted = config->ItemSelectionMask[i][j] * config->ItemSelectionTable[_DataFactionID][i][j].size();
-            int itemsToPick = itemsWanted - auctionTable[i][j];
-            while (itemsToPick > 0)
-            {
-                int randIndex = std::rand() % config->ItemSelectionTable[_DataFactionID][i][j].size();
-                ScannedItem* scan = config->ItemSelectionTable[_DataFactionID][i][j][randIndex];
-                int maxQty = sObjectMgr->GetItemTemplate(scan->GetItemID())->GetMaxStackSize();
-                int x = std::rand() % 100;
-
-                int qty;
-                if (x < 33)
-                {
-                    qty = 1;
-                }
-                else if (x > 66)
-                {
-                    qty = maxQty;
-                }
-                else
-                {
-                    qty = 2 + (std::rand() % (maxQty - 2));
-                }
-
-                if (scan->GetMeanPrice() < 3)
-                {
-                    itemsToPick--;
-                    continue;
-                }
-
-                int buyout = qty * ((std::rand() % (int)(scan->GetMeanPrice() * 0.3f)) + scan->GetMeanPrice() * 0.8f);
-
-                Item* item =
-                    Item::CreateItem(scan->GetItemID(), qty, bot->GetPlayer().get(), false, scan->GetSuffixID());
-                item->AddToUpdateQueueOf(bot->GetPlayer().get());
-
-                // Create and populate the auction entry
-                AuctionEntry* auction = new AuctionEntry();
-                auction->Id = sObjectMgr->GenerateAuctionID();
-                auction->houseId = _id;
-                auction->item_guid = item->GetGUID();
-                auction->item_template = item->GetEntry();
-                auction->itemCount = qty;
-                auction->owner = bot->GetPlayer().get()->GetGUID();
-                auction->startbid = buyout;
-                auction->buyout = buyout;
-                auction->bid = 0;
-                auction->deposit = 0;
-                int time = (std::rand() % 39601) + 3600;  // Random duration between 1 and 12 hours
-                auction->expire_time = std::time(nullptr) + time;
-                auction->auctionHouseEntry = sAuctionMgr->GetAuctionHouseEntryFromHouse(_id);
-
-                item->SaveToDB(trans);
-                item->RemoveFromUpdateQueueOf(bot->GetPlayer().get());
-                sAuctionMgr->AddAItem(item);
-                sAuctionMgr->GetAuctionsMapByHouseId(_id)->AddAuction(auction);
-                auction->SaveToDB(trans);
-                itemsToPick--;
-            }
-        }
-    }
-    CharacterDatabase.CommitTransaction(trans);
+    listingService->ListNewAuctions(_AuctionHouseId, auctionTable);
 }
 
-void AuctionSim::DeleteAuctions(Player* player)
+std::vector<AuctionSimTests::TestResult> AuctionSim::RunTests()
+{
+    std::vector<AuctionSimTests::TestResult> results = AuctionSimTests::RunLogicTests(*bot, *config);
+
+    results.push_back(
+        AuctionSimTests::RunLiveListingTest(*bot, *config, *listingService, AuctionHouseId::Alliance));
+    results.push_back(AuctionSimTests::RunLiveListingTest(*bot, *config, *listingService, AuctionHouseId::Horde));
+
+    results.push_back(
+        AuctionSimTests::RunLiveBuyingTest(*bot, *config, *listingService, AuctionHouseId::Alliance));
+    results.push_back(AuctionSimTests::RunLiveBuyingTest(*bot, *config, *listingService, AuctionHouseId::Horde));
+
+    results.push_back(
+        AuctionSimTests::RunLiveLevelCapTest(*bot, *config, *listingService, AuctionHouseId::Alliance));
+    results.push_back(
+        AuctionSimTests::RunLiveLevelCapTest(*bot, *config, *listingService, AuctionHouseId::Horde));
+
+    return results;
+}
+
+uint32 AuctionSim::CleanOverCapAuctions()
+{
+    if (!bot || !bot->GetPlayer() || !config)
+    {
+        return 0;
+    }
+
+    ObjectGuid botPlayerGUID = bot->GetPlayer().get()->GetGUID();
+    auto trans = CharacterDatabase.BeginTransaction();
+    uint32 removedCount = 0;
+
+    for (AuctionHouseId houseId : {AuctionHouseId::Alliance, AuctionHouseId::Horde})
+    {
+        auto auctions = sAuctionMgr->GetAuctionsMapByHouseId(houseId)->GetAuctions();
+        for (auto it = auctions.begin(); it != auctions.end();)
+        {
+            AuctionEntry* auction = it->second;
+            if (auction->owner != botPlayerGUID)
+            {
+                ++it;
+                continue;
+            }
+
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(auction->item_template);
+            bool withinCap = !proto || AuctionPricing::IsWithinLevelCap(
+                                            proto->RequiredLevel,
+                                            proto->ItemLevel,
+                                            config->maxRequiredLevel,
+                                            config->maxItemLevel);
+            if (withinCap)
+            {
+                ++it;
+                continue;
+            }
+
+            auction->DeleteFromDB(trans);
+            sAuctionMgr->RemoveAItem(auction->item_guid);
+            sAuctionMgr->GetAuctionsMapByHouseId(houseId)->RemoveAuction(auction);
+            it = auctions.erase(it);
+            removedCount++;
+        }
+    }
+
+    CharacterDatabase.CommitTransaction(trans);
+    LOG_INFO("module", "AuctionSim: cleaned {} over-cap auctions", removedCount);
+    return removedCount;
+}
+
+void AuctionSim::DeleteAuctions()
 {
     if (!bot || !bot->GetPlayer())
     {
@@ -200,6 +207,7 @@ void AuctionSim::DeleteAuctions(Player* player)
         if (it->second->owner == botPlayerGUID)
         {
             it->second->DeleteFromDB(trans);
+            sAuctionMgr->RemoveAItem(it->second->item_guid);
             sAuctionMgr->GetAuctionsMapByHouseId(AuctionHouseId::Alliance)->RemoveAuction(it->second);
             it = allianceAuctions.erase(it);
         }
@@ -215,6 +223,7 @@ void AuctionSim::DeleteAuctions(Player* player)
         if (it->second->owner == botPlayerGUID)
         {
             it->second->DeleteFromDB(trans);
+            sAuctionMgr->RemoveAItem(it->second->item_guid);
             sAuctionMgr->GetAuctionsMapByHouseId(AuctionHouseId::Horde)->RemoveAuction(it->second);
             it = hordeAuctions.erase(it);
         }

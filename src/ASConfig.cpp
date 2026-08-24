@@ -1,13 +1,61 @@
-#include "Config.h"
-#include <cstddef>
-#include <filesystem>
 #include "ASConfig.h"
+#include <array>
+#include <charconv>
+#include <filesystem>
+#include <string_view>
+#include "Config.h"
 #include "ObjectMgr.h"
 #include "ScannedItem.h"
 
+namespace
+{
+    struct ItemClassConfigKey
+    {
+        uint32 itemClass;
+        char const* configKey;
+    };
+
+    constexpr std::array<ItemClassConfigKey, MAX_ITEM_CLASS> kItemClassConfigKeys = {{
+        {ITEM_CLASS_CONSUMABLE, "AuctionSim.ConsumablePercent"},
+        {ITEM_CLASS_CONTAINER, "AuctionSim.ContainerPercent"},
+        {ITEM_CLASS_WEAPON, "AuctionSim.WeaponPercent"},
+        {ITEM_CLASS_GEM, "AuctionSim.GemPercent"},
+        {ITEM_CLASS_ARMOR, "AuctionSim.ArmorPercent"},
+        {ITEM_CLASS_REAGENT, "AuctionSim.ReagentPercent"},
+        {ITEM_CLASS_PROJECTILE, "AuctionSim.ProjectilePercent"},
+        {ITEM_CLASS_TRADE_GOODS, "AuctionSim.TradeGoodsPercent"},
+        {ITEM_CLASS_GENERIC, "AuctionSim.GenericPercent"},
+        {ITEM_CLASS_RECIPE, "AuctionSim.RecipePercent"},
+        {ITEM_CLASS_MONEY, "AuctionSim.MoneyPercent"},
+        {ITEM_CLASS_QUIVER, "AuctionSim.QuiverPercent"},
+        {ITEM_CLASS_QUEST, "AuctionSim.QuestPercent"},
+        {ITEM_CLASS_KEY, "AuctionSim.KeyPercent"},
+        {ITEM_CLASS_PERMANENT, "AuctionSim.PermanentPercent"},
+        {ITEM_CLASS_MISC, "AuctionSim.MiscPercent"},
+        {ITEM_CLASS_GLYPH, "AuctionSim.GlyphPercent"},
+    }};
+
+    struct QualityToken
+    {
+        uint32 quality;
+        std::string_view label;
+    };
+
+    constexpr std::array<QualityToken, 7> kQualityTokens = {{
+        {ITEM_QUALITY_POOR, "GREY"},
+        {ITEM_QUALITY_NORMAL, "WHITE"},
+        {ITEM_QUALITY_UNCOMMON, "GREEN"},
+        {ITEM_QUALITY_RARE, "BLUE"},
+        {ITEM_QUALITY_EPIC, "PURPLE"},
+        {ITEM_QUALITY_LEGENDARY, "ORANGE"},
+        {ITEM_QUALITY_ARTIFACT, "YELLOW"},
+    }};
+}
+
 ASConfig::ASConfig(std::string _filepath, bool& _isEnabled)
 {
-    this->updateInterval = sConfigMgr->GetOption<int>("AuctionSim.UpdateInterval", 0);
+    this->maxRequiredLevel = sConfigMgr->GetOption<uint32>("AuctionSim.MaxRequiredLevel", 0);
+    this->maxItemLevel = sConfigMgr->GetOption<uint32>("AuctionSim.MaxItemLevel", 0);
 
     if (!std::filesystem::exists(_filepath))
     {
@@ -27,98 +75,110 @@ ASConfig::ASConfig(std::string _filepath, bool& _isEnabled)
 
     std::string line;
     std::getline(stream, line);
-    int totalItems = std::stoi(line);
+    size_t totalItems = std::stoul(line);
 
     this->ScanData.reserve(totalItems);
 
     while (std::getline(stream, line))
     {
-        this->ScanData.emplace_back(ScannedItem(line));
+        if (auto item = ScannedItem::TryParse(line))
+        {
+            this->ScanData.push_back(*item);
+        }
+        else
+        {
+            LOG_ERROR("module", "AuctionSim: skipping malformed line in {}: '{}'", _filepath, line);
+        }
+    }
+
+    if (this->ScanData.size() > totalItems)
+    {
+        LOG_ERROR(
+            "module",
+            "AuctionSim: {} contains more items ({}) than its header declared ({}); refusing to load, "
+            "ItemSelectionTable pointers would not be stable",
+            _filepath,
+            this->ScanData.size(),
+            totalItems);
+        _isEnabled = false;
+        return;
     }
 
     LOG_INFO("module", "AuctionSim: loaded prices for {} items", this->ScanData.size());
 
-    for (int _itemClass = 0; _itemClass < MAX_ITEM_CLASS; _itemClass++)
+    for (auto const& entry : kItemClassConfigKeys)
     {
-        switch (_itemClass)
-        {
-            case ITEM_CLASS_CONSUMABLE:
-                UnpackQualityString(sConfigMgr->GetOption<std::string>("AuctionSim.ConsumablePercent", ""), _itemClass);
-                break;
-            case ITEM_CLASS_CONTAINER:
-                UnpackQualityString(sConfigMgr->GetOption<std::string>("AuctionSim.ContainerPercent", ""), _itemClass);
-                break;
-            case ITEM_CLASS_WEAPON:
-                UnpackQualityString(sConfigMgr->GetOption<std::string>("AuctionSim.WeaponPercent", ""), _itemClass);
-                break;
-            case ITEM_CLASS_GEM:
-                UnpackQualityString(sConfigMgr->GetOption<std::string>("AuctionSim.GemPercent", ""), _itemClass);
-                break;
-            case ITEM_CLASS_ARMOR:
-                UnpackQualityString(sConfigMgr->GetOption<std::string>("AuctionSim.ArmorPercent", ""), _itemClass);
-                break;
-            case ITEM_CLASS_REAGENT:
-                UnpackQualityString(sConfigMgr->GetOption<std::string>("AuctionSim.ReagentPercent", ""), _itemClass);
-                break;
-            case ITEM_CLASS_PROJECTILE:
-                UnpackQualityString(sConfigMgr->GetOption<std::string>("AuctionSim.ProjectilePercent", ""), _itemClass);
-                break;
-            case ITEM_CLASS_TRADE_GOODS:
-                UnpackQualityString(sConfigMgr->GetOption<std::string>("AuctionSim.TradeGoodsPercent", ""), _itemClass);
-                break;
-            case ITEM_CLASS_GENERIC:
-                UnpackQualityString(sConfigMgr->GetOption<std::string>("AuctionSim.GenericPercent", ""), _itemClass);
-                break;
-            case ITEM_CLASS_RECIPE:
-                UnpackQualityString(sConfigMgr->GetOption<std::string>("AuctionSim.RecipePercent", ""), _itemClass);
-                break;
-            case ITEM_CLASS_MONEY:
-                UnpackQualityString(sConfigMgr->GetOption<std::string>("AuctionSim.MoneyPercent", ""), _itemClass);
-                break;
-            case ITEM_CLASS_QUIVER:
-                UnpackQualityString(sConfigMgr->GetOption<std::string>("AuctionSim.QuiverPercent", ""), _itemClass);
-                break;
-            case ITEM_CLASS_QUEST:
-                UnpackQualityString(sConfigMgr->GetOption<std::string>("AuctionSim.QuestPercent", ""), _itemClass);
-                break;
-            case ITEM_CLASS_KEY:
-                UnpackQualityString(sConfigMgr->GetOption<std::string>("AuctionSim.KeyPercent", ""), _itemClass);
-                break;
-            case ITEM_CLASS_PERMANENT:
-                UnpackQualityString(sConfigMgr->GetOption<std::string>("AuctionSim.PermanentPercent", ""), _itemClass);
-                break;
-            case ITEM_CLASS_MISC:
-                UnpackQualityString(sConfigMgr->GetOption<std::string>("AuctionSim.MiscPercent", ""), _itemClass);
-                break;
-            case ITEM_CLASS_GLYPH:
-                UnpackQualityString(sConfigMgr->GetOption<std::string>("AuctionSim.GlyphPercent", ""), _itemClass);
-                break;
-        }
+        UnpackQualityString(sConfigMgr->GetOption<std::string>(entry.configKey, ""), entry.itemClass);
     }
 
     for (size_t i = 0; i < this->ScanData.size(); i++)
     {
         auto proto = sObjectMgr->GetItemTemplate(ScanData[i].GetItemID());
+        if (!proto)
+        {
+            LOG_WARN(
+                "module",
+                "AuctionSim: item {} in {} not found in item_template, skipping",
+                ScanData[i].GetItemID(),
+                _filepath);
+            continue;
+        }
         this->ItemSelectionTable[ScanData[i].GetFactionNum()][proto->Class][proto->Quality].emplace_back(&ScanData[i]);
     }
 }
 
-void ASConfig::UnpackQualityString(std::string _qualityString, int _itemClass)
+std::vector<ScannedItem*> const& ASConfig::ItemsFor(AuctionHouseId houseId, uint32 itemClass, uint32 quality) const
 {
-    std::string::size_type pos;
-    pos = _qualityString.find("GREY: ");
-    this->ItemSelectionMask[_itemClass][ITEM_QUALITY_POOR] = std::stoi(_qualityString.substr(pos + 6, 4)) / 100.0f;
-    pos = _qualityString.find("WHITE: ");
-    this->ItemSelectionMask[_itemClass][ITEM_QUALITY_NORMAL] = std::stoi(_qualityString.substr(pos + 7, 4)) / 100.0f;
-    pos = _qualityString.find("GREEN: ");
-    this->ItemSelectionMask[_itemClass][ITEM_QUALITY_UNCOMMON] = std::stoi(_qualityString.substr(pos + 7, 4)) / 100.0f;
-    pos = _qualityString.find("BLUE: ");
-    this->ItemSelectionMask[_itemClass][ITEM_QUALITY_RARE] = std::stoi(_qualityString.substr(pos + 6, 4)) / 100.0f;
-    pos = _qualityString.find("PURPLE: ");
-    this->ItemSelectionMask[_itemClass][ITEM_QUALITY_EPIC] = std::stoi(_qualityString.substr(pos + 8, 4)) / 100.0f;
-    pos = _qualityString.find("ORANGE: ");
-    this->ItemSelectionMask[_itemClass][ITEM_QUALITY_LEGENDARY] = std::stoi(_qualityString.substr(pos + 8, 4)) / 100.0f;
-    pos = _qualityString.find("YELLOW: ");
-    this->ItemSelectionMask[_itemClass][ITEM_QUALITY_ARTIFACT] = std::stoi(_qualityString.substr(pos + 8, 4)) / 100.0f;
-    this->ItemSelectionMask[_itemClass][ITEM_QUALITY_HEIRLOOM] = 0.0f;
+    return ItemSelectionTable[static_cast<size_t>(houseId)][itemClass][quality];
+}
+
+ScannedItem const* ASConfig::FindScannedItem(
+    AuctionHouseId houseId, uint32 itemClass, uint32 quality, uint32 itemID) const
+{
+    for (ScannedItem const* item : ItemsFor(houseId, itemClass, quality))
+    {
+        if (item->GetItemID() == itemID)
+        {
+            return item;
+        }
+    }
+    return nullptr;
+}
+
+void ASConfig::UnpackQualityString(std::string_view qualityString, int itemClass)
+{
+    for (auto const& token : kQualityTokens)
+    {
+        std::string prefix = std::string(token.label) + ": ";
+        auto pos = qualityString.find(prefix);
+        if (pos == std::string_view::npos)
+        {
+            LOG_ERROR(
+                "module",
+                "AuctionSim: missing '{}' entry in quality string for item class {}, defaulting to 0",
+                token.label,
+                itemClass);
+            this->ItemSelectionMask[itemClass][token.quality] = 0.0f;
+            continue;
+        }
+
+        std::string_view valueStr = qualityString.substr(pos + prefix.size(), 4);
+
+        int value = 0;
+        auto result = std::from_chars(valueStr.data(), valueStr.data() + valueStr.size(), value);
+        if (result.ec != std::errc())
+        {
+            LOG_ERROR(
+                "module",
+                "AuctionSim: malformed percent value '{}' for '{}' in item class {}, defaulting to 0",
+                valueStr,
+                token.label,
+                itemClass);
+            value = 0;
+        }
+
+        this->ItemSelectionMask[itemClass][token.quality] = value / 100.0f;
+    }
+
+    this->ItemSelectionMask[itemClass][ITEM_QUALITY_HEIRLOOM] = 0.0f;
 }

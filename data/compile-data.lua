@@ -45,15 +45,9 @@ local function AddToData(_rows, _faction)
     for _, row in ipairs(_rows) do
         EnsureTableExists(Data, _faction)
         EnsureTableExists(Data[_faction], row[RowTypes.ItemID])
-        EnsureTableExists(
-            Data[_faction][row[RowTypes.ItemID]],
-            row[RowTypes.SuffixID]
-        )
+        EnsureTableExists(Data[_faction][row[RowTypes.ItemID]], row[RowTypes.SuffixID])
         local buyout = {}
-        EnsureTableExists(
-            Data[_faction][row[RowTypes.ItemID]][row[RowTypes.SuffixID]],
-            buyout
-        )
+        EnsureTableExists(Data[_faction][row[RowTypes.ItemID]][row[RowTypes.SuffixID]], buyout)
         table.insert(
             Data[_faction][row[RowTypes.ItemID]][row[RowTypes.SuffixID]][buyout],
             row[RowTypes.Buyout] / row[RowTypes.StackSize]
@@ -108,21 +102,14 @@ for faction, items in pairs(Data) do
             local mean = math.floor(sum / count)
             local factionNum = 0
             if faction == "Alliance" then
-                factionNum = 0
+                factionNum = 2
             end
             if faction == "Horde" then
-                factionNum = 1
+                factionNum = 6
             end
             table.insert(
                 buffer,
-                ("%d:%d:%d:%d:%d:%d"):format(
-                    factionNum,
-                    item,
-                    suffix,
-                    mean,
-                    math.floor(min),
-                    math.floor(max)
-                )
+                ("%d:%d:%d:%d:%d:%d"):format(factionNum, item, suffix, mean, math.floor(min), math.floor(max))
             )
             total = total + 1
         end

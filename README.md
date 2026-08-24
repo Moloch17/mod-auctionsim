@@ -1,27 +1,51 @@
-# AuctionSim: A Module For Azerothcore WoTLK 3.3.5a
+# AuctionSim: A Module For AzerothCore WoTLK 3.3.5a
 
-AuctionSim uses scraped price data from the Lordaeron WoTLK realm on Warmane and uses it to populate your own auction house. The module can both buy and sell and does not have the same limitaions the classic ah-bot module does. It does not have any categories of items that it misses and the prices are not based on the vendor sell price. It uses different price tables for both Horde and Alliance (no neutral) and is heavily customizable in the config so you can mold how your auction house looks to your whims. It is fast and can list over 100,000 items in under 100ms. 
+AuctionSim populates and maintains your realm's auction house using price data scraped from a live WoW 3.3.5a economy (Lordaeron, Warmane). Unlike the classic ah-bot module, it isn't limited to a handful of item categories and doesn't price items off their vendor sell price -- it uses real observed mean/min/max prices, with separate price tables for Alliance and Horde (no neutral AH support). Listing behavior is fully configurable per item class and quality. It's fast: over 100,000 items can be listed in under 100ms.
 
-# Installation:
+The bot both **lists** items for sale and **buys** items it finds underpriced, so the auction house behaves like a live economy rather than a static shelf of vendor-bot listings.
 
-Navigate to the azerothcore/modules directory and run ```git clone https://github.com/Moloch17/mod-auctionsim.git``` and then rebuild azerothcore. Then navigate to azerothcore/env/dist/etc/modules and duplicate auctionsim.conf.dist and rename it to auctionsim.conf. This is the config file you will edit.
+## How it works
 
-If you have used ah-bot or ah-bot-plus previously, there should be no conflicts with this module. They cannot be run at the same time so be sure to disable other auction house bot modules before enabling this one.
+Every hour (fixed, not configurable), AuctionSim scans both auction houses:
 
-This module is not intended to be used with combined auction house enabled. It is untested.
+- **Listing**: for each item class/quality bucket, it lists new items up to the percentage targets set in the config, picking a random quantity and a buyout price rolled around the item's known mean price.
+- **Buying**: for each auction it doesn't already own, if the price is at or under the item's known mean, it's always queued to buy. If the price is above mean but still under the item's known maximum, it's queued with some probability (randomized each scan, to mimic natural demand variance between real players) rather than always or never. Queued purchases execute within 45 minutes of being queued, so a purchase decision is always acted on well before the next scan reconsiders that auction.
+- Optional `MaxRequiredLevel`/`MaxItemLevel` caps stop it from listing gear above your realm's level, for progression servers running below the max level.
 
-AuctionSim is disabled by default and must be enabled in the config.
+## Installation
 
-A specific character must be selected as a bot for the auction house operations. Do not use a character you intend to play. You must get the accound ID and character ID of the character you want and enter it into the config. Reusing another character that was used for previous auction house bot modules is fine (preferred, even).
+1. From your AzerothCore `modules` directory:
+   ```
+   git clone https://github.com/Moloch17/mod-auctionsim.git
+   ```
+2. Rebuild AzerothCore.
+3. In `azerothcore/env/dist/etc/modules`, duplicate `auctionsim.conf.dist` and rename the copy to `auctionsim.conf`. This is the file you'll edit.
+4. In `auctionsim.conf`, set `AuctionSim.Enabled = 1` and fill in `AuctionSim.BotAccountID` / `AuctionSim.BotCharacterID` (see below). Everything else is pre-configured and only needs changing if you want to adjust listing behavior.
 
-Everything else is pre-configured and won't need to be edited unless you want to.
+**Notes:**
+- If you've previously used ah-bot or ah-bot-plus, there's no conflict, but the two cannot run at the same time -- disable other auction house bot modules before enabling this one.
+- Not intended for use with combined auction house enabled; untested in that configuration.
+- AuctionSim is disabled by default.
 
-# Usage:
+### Choosing a bot character
 
-By default the module scans the auction house at server start and every hour afterward to list and buy items. You can use the command .scan to run the scan manually and .delete to delete all the bot-created auctions on the auction house.
+A specific character must be designated as the bot for all auction house operations -- **do not use a character you intend to play**. Get that character's account ID and character ID and enter them into `AuctionSim.BotAccountID`/`AuctionSim.BotCharacterID`. Reusing a character previously used for another AH bot module is fine, and preferred.
 
-# Known issues and future plans:
+## Commands
 
-Currently when the bot buys an auction from a player the player will receive a chat message that their auction expired. The auction was successful but the chat message is incorrect. Mail will arrive as expected.
+All commands are nested under `.auctionsim` and require GM (Administrator) permissions. Usable from both in-game chat and the server console.
 
-The config options will be expanded soon to allow for further customization of the shape of your auction house.
+| Command | Description |
+|---|---|
+| `.auctionsim scan` | Manually triggers an immediate scan of both auction houses (the same operation that runs automatically every hour). Reports elapsed time and how many items were added to the buy queue. |
+| `.auctionsim delete` | Deletes every auction currently listed by the bot, on both factions. |
+| `.auctionsim showqueue` | Shows how many purchases are currently queued, and how long until the next and last queued purchases will execute. |
+| `.auctionsim cleanovercap` | Removes existing bot listings that violate the currently configured `MaxRequiredLevel`/`MaxItemLevel` caps. Lowering a cap in the config doesn't retroactively remove items already listed above it -- run this after tightening a cap to clean those up. |
+| `.auctionsim test` | Runs the module's built-in self-test suite (config/data sanity checks, pricing-math bounds, and live end-to-end listing/buying/level-cap checks) and reports pass/fail for each to both chat and the server log. Useful for verifying the module is healthy after install or a config change. |
+
+## Configuration reference
+
+`auctionsim.conf` covers:
+- `AuctionSim.Enabled`, `AuctionSim.BotAccountID`, `AuctionSim.BotCharacterID`, `AuctionSim.StartupScan` -- core setup, see Installation above.
+- `AuctionSim.MaxRequiredLevel` / `AuctionSim.MaxItemLevel` -- optional level caps for progression realms (`0` disables either check).
+- `AuctionSim.<ItemClass>Percent` (17 lines, one per item class) -- the percentage of known items in each quality tier (Grey/White/Green/Blue/Purple/Orange/Yellow) to keep listed. Comments in the file explain the format.

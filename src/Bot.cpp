@@ -9,6 +9,7 @@ Bot::Bot(bool& _isEnabled)
     {
         LOG_ERROR("module", "AuctionSim: invalid account/character id");
         _isEnabled = false;
+        return;
     }
     LoginDatabasePreparedStatement* stmt = LoginDatabase.GetPreparedStatement(LOGIN_GET_USERNAME_BY_ID);
     stmt->SetData(0, this->accountID);

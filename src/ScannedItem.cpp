@@ -1,51 +1,41 @@
 #include "ScannedItem.h"
-#include <string>
-#include "Define.h"
+#include <charconv>
+#include <optional>
+#include "Tokenize.h"
 
-ScannedItem::ScannedItem(std::string_view _dataLine)
+namespace
 {
-    std::string subStr = "";
-    int delimCount = 0;
-
-    for (size_t i = 0; i < _dataLine.size(); i++)
+    template <typename T>
+    bool ParseField(std::string_view field, T& out)
     {
-        char c = _dataLine[i];
-        if (c != ':')
-        {
-            subStr.push_back(c);
-        }
-        else
-        {
-            int num = std::stoi(subStr);
-            switch (delimCount)
-            {
-                case 0:
-                    this->factionNum = num;
-                    break;
-                case 1:
-                    this->itemID = num;
-                    break;
-                case 2:
-                    this->suffixID = num;
-                    break;
-                case 3:
-                    this->meanPrice = num;
-                    break;
-                case 4:
-                    this->minPrice = num;
-                    break;
-                default:
-                    this->maxPrice = num;
-            }
-            subStr = "";
-            delimCount++;
-        }
+        auto result = std::from_chars(field.data(), field.data() + field.size(), out);
+        return result.ec == std::errc() && result.ptr == field.data() + field.size();
     }
 }
 
-uint8 ScannedItem::GetFactionNum() { return this->factionNum; }
-uint32 ScannedItem::GetItemID() { return this->itemID; }
-uint32 ScannedItem::GetSuffixID() { return this->suffixID; }
-uint32 ScannedItem::GetMeanPrice() { return this->meanPrice; }
-uint32 ScannedItem::GetMinPrice() { return this->minPrice; }
-uint32 ScannedItem::GetMaxPrice() { return this->maxPrice; }
+std::optional<ScannedItem> ScannedItem::TryParse(std::string_view dataLine)
+{
+    std::vector<std::string_view> fields = Acore::Tokenize(dataLine, ':', false);
+    if (fields.size() != 6)
+    {
+        return std::nullopt;
+    }
+
+    ScannedItem item;
+    uint32 factionNum = 0;
+    if (!ParseField(fields[0], factionNum) || factionNum > UINT8_MAX) return std::nullopt;
+    item.factionNum = static_cast<uint8>(factionNum);
+    if (!ParseField(fields[1], item.itemID)) return std::nullopt;
+    if (!ParseField(fields[2], item.suffixID)) return std::nullopt;
+    if (!ParseField(fields[3], item.meanPrice)) return std::nullopt;
+    if (!ParseField(fields[4], item.minPrice)) return std::nullopt;
+    if (!ParseField(fields[5], item.maxPrice)) return std::nullopt;
+    return item;
+}
+
+uint8 ScannedItem::GetFactionNum() const { return this->factionNum; }
+uint32 ScannedItem::GetItemID() const { return this->itemID; }
+int32 ScannedItem::GetSuffixID() const { return this->suffixID; }
+uint32 ScannedItem::GetMeanPrice() const { return this->meanPrice; }
+uint32 ScannedItem::GetMinPrice() const { return this->minPrice; }
+uint32 ScannedItem::GetMaxPrice() const { return this->maxPrice; }
