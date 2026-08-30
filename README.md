@@ -27,7 +27,8 @@ Every hour (fixed, not configurable), AuctionSim scans both auction houses:
 
 This module can be fully configured using a companion interface addon. Copy the ahsim folder in interface_addon into your game's Interface/Addons directory. Once logged in with an account that has GM privileges, run /auctionsim or /ahsim to open the configuration UI. Click the help button for step by step instructions for configuring the module. The same help text in the help menu is reproduced below:
 
-```AuctionSim - First-Time Setup
+```
+AuctionSim - First-Time Setup
 =============================
 
 AuctionSim runs a bot character that lists and buys items on the Auction House 
@@ -100,6 +101,7 @@ Help            This window.
 Notes
 -----
 - Mail the bot would get from its own auctions is discarded automatically.
-- Everything set here is written to auctionsim.conf, so it survives a restart.```
+- Everything set here is written to auctionsim.conf, so it survives a restart.
+```
 
 [<img src="images/addon.png">]
