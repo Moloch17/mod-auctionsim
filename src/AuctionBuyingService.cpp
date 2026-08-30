@@ -71,7 +71,7 @@ void AuctionBuyingService::BuyItem(AuctionEntry* auction, AuctionHouseId houseId
     auction->bid = auction->buyout;
     sAuctionMgr->SendAuctionSuccessfulMail(auction, trans);
     auction->DeleteFromDB(trans);
-    sAuctionMgr->RemoveAItem(auction->item_guid);
+    sAuctionMgr->RemoveAItem(auction->item_guid, true, &trans);  // destroy the bought item, don't leak it
     sAuctionMgr->GetAuctionsMapByHouseId(houseId)->RemoveAuction(auction);
 
     CharacterDatabase.CommitTransaction(trans);

@@ -1,6 +1,7 @@
 #include "AuctionPricing.h"
 #include <algorithm>
 #include <cmath>
+#include <random>
 #include "Random.h"
 
 namespace
@@ -8,8 +9,11 @@ namespace
     constexpr uint32 kLowQtyRollCeiling = 33;   // roll < this -> qty = 1
     constexpr uint32 kHighQtyRollFloor = 66;    // roll > this -> qty = maxStackSize
     constexpr uint32 kMinListablePrice = 3;
-    constexpr float kBuyoutSpreadFactor = 0.3f;
-    constexpr float kBuyoutBaseFactor = 0.8f;
+
+    // Std deviation divisor for RollBuyoutPrice's split-normal curve: each side's
+    // distance from the mean to its bound (min or max) is treated as this many
+    // standard deviations, so draws land at the true edge only in the rare tail.
+    constexpr float kBuyoutSigmaDivisor = 3.0f;
     constexpr uint32 kMinDurationSeconds = 3600;   // 1 hour
     constexpr uint32 kMaxDurationSeconds = 43200;  // 12 hours
 
@@ -66,11 +70,37 @@ namespace AuctionPricing
         return meanPrice >= kMinListablePrice;
     }
 
-    uint32 RollBuyoutPrice(uint32 meanPrice, uint32 quantity)
+    uint32 RollBuyoutPrice(uint32 minPrice, uint32 meanPrice, uint32 maxPrice, uint32 quantity)
     {
-        uint32 spread = static_cast<uint32>(meanPrice * kBuyoutSpreadFactor);
-        uint32 base = static_cast<uint32>(meanPrice * kBuyoutBaseFactor);
-        return quantity * (urand(0, spread) + base);
+        if (maxPrice <= minPrice)
+        {
+            return quantity * meanPrice;
+        }
+
+        // Split-normal (asymmetric bell) curve spanning the item's full scanned
+        // min..max range, peaking at meanPrice. Each side gets its own standard
+        // deviation so an off-center mean still produces a natural-looking curve
+        // rather than a lopsided clamp. Draws are rejected and re-rolled instead of
+        // clamped, so the shape isn't distorted by piling probability up at the edges;
+        // with min/max sitting ~3 sigma out, a redraw is needed only rarely.
+        float meanF = static_cast<float>(meanPrice);
+        float sigmaLow = std::max((meanF - static_cast<float>(minPrice)) / kBuyoutSigmaDivisor, 1.0f);
+        float sigmaHigh = std::max((static_cast<float>(maxPrice) - meanF) / kBuyoutSigmaDivisor, 1.0f);
+        std::normal_distribution<float> standardNormal(0.0f, 1.0f);
+
+        float price;
+        uint32 attempts = 0;
+        do
+        {
+            float z = standardNormal(RandomEngine::Instance());
+            price = meanF + z * (z < 0.0f ? sigmaLow : sigmaHigh);
+        } while ((price < minPrice || price > maxPrice) && ++attempts < 64);
+
+        // Only reachable with malformed scan data (e.g. mean outside [min, max]);
+        // guards against spinning forever rather than shaping the normal case.
+        price = std::clamp(price, static_cast<float>(minPrice), static_cast<float>(maxPrice));
+
+        return quantity * static_cast<uint32>(price);
     }
 
     uint32 RollAuctionDuration() { return urand(kMinDurationSeconds, kMaxDurationSeconds); }

@@ -79,14 +79,20 @@ AuctionEntry* AuctionListingService::ListOneItem(
     }
 
     uint32 quantity = AuctionPricing::RollQuantity(proto->GetMaxStackSize());
-    uint32 buyout = AuctionPricing::RollBuyoutPrice(scan.GetMeanPrice(), quantity);
+    uint32 buyout =
+        AuctionPricing::RollBuyoutPrice(scan.GetMinPrice(), scan.GetMeanPrice(), scan.GetMaxPrice(), quantity);
 
     // Item::CreateItem's randomPropertyId is declared uint32 but is passed straight into
     // SetItemRandomProperties(int32) -- negative (enchantment/suffix table) values round-trip
     // correctly through the bit-preserving uint32<->int32 conversion.
+    //
+    // The item is never placed in an inventory slot, so it must not go through the bot
+    // player's item update queue: CreateItem already stamps the owner GUID, and
+    // SaveToDB below persists it in `trans`. Queueing it instead leaves a stray entry
+    // that Player::_SaveInventory later trips over (bag 255 / slot 0) when the bot
+    // character is also logged in.
     Item* item = Item::CreateItem(
         scan.GetItemID(), quantity, _bot.GetPlayer().get(), false, static_cast<uint32>(scan.GetSuffixID()));
-    item->AddToUpdateQueueOf(_bot.GetPlayer().get());
 
     AuctionEntry* auction = new AuctionEntry();
     auction->Id = sObjectMgr->GenerateAuctionID();
@@ -103,7 +109,6 @@ AuctionEntry* AuctionListingService::ListOneItem(
     auction->auctionHouseEntry = sAuctionMgr->GetAuctionHouseEntryFromHouse(houseId);
 
     item->SaveToDB(trans);
-    item->RemoveFromUpdateQueueOf(_bot.GetPlayer().get());
     sAuctionMgr->AddAItem(item);
     sAuctionMgr->GetAuctionsMapByHouseId(houseId)->AddAuction(auction);
     auction->SaveToDB(trans);

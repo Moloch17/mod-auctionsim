@@ -145,6 +145,64 @@ ScannedItem const* ASConfig::FindScannedItem(
     return nullptr;
 }
 
+namespace
+{
+    // "AuctionSim.ConsumablePercent" -> "ConsumablePercent"
+    std::string_view StripConfigPrefix(std::string_view configKey)
+    {
+        auto dotPos = configKey.find('.');
+        return dotPos == std::string_view::npos ? configKey : configKey.substr(dotPos + 1);
+    }
+}
+
+bool ASConfig::ResolveMaskKey(std::string_view key, uint32& outItemClass, uint32& outQuality)
+{
+    auto dotPos = key.find('.');
+    if (dotPos == std::string_view::npos)
+    {
+        return false;
+    }
+
+    std::string_view percentConfigKey = key.substr(0, dotPos);
+    std::string_view qualityLabel = key.substr(dotPos + 1);
+
+    for (auto const& entry : kItemClassConfigKeys)
+    {
+        if (StripConfigPrefix(entry.configKey) != percentConfigKey)
+        {
+            continue;
+        }
+        for (auto const& token : kQualityTokens)
+        {
+            if (token.label == qualityLabel)
+            {
+                outItemClass = entry.itemClass;
+                outQuality = token.quality;
+                return true;
+            }
+        }
+        return false;
+    }
+    return false;
+}
+
+std::vector<ASConfig::MaskKeyEntry> const& ASConfig::AllMaskKeys()
+{
+    static std::vector<MaskKeyEntry> keys = [] {
+        std::vector<MaskKeyEntry> result;
+        result.reserve(kItemClassConfigKeys.size() * kQualityTokens.size());
+        for (auto const& entry : kItemClassConfigKeys)
+        {
+            for (auto const& token : kQualityTokens)
+            {
+                result.push_back({StripConfigPrefix(entry.configKey), token.label, entry.itemClass, token.quality});
+            }
+        }
+        return result;
+    }();
+    return keys;
+}
+
 void ASConfig::UnpackQualityString(std::string_view qualityString, int itemClass)
 {
     for (auto const& token : kQualityTokens)

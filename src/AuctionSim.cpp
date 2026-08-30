@@ -1,6 +1,8 @@
 #include "AuctionSim.h"
+#include <filesystem>
 #include <memory>
 #include <string>
+#include <system_error>
 #include "ASConfig.h"
 #include "AuctionHouseMgr.h"
 #include "AuctionHouseSearcher.h"
@@ -14,33 +16,84 @@
 #include "ScriptMgr.h"
 #include "WorldConfig.h"
 
+namespace
+{
+    bool IsBotCharacter(uint32 lowGuid)
+    {
+        uint32 botLowGuid = sConfigMgr->GetOption<uint32>("AuctionSim.BotCharacterID", 0);
+        return botLowGuid != 0 && lowGuid == botLowGuid;
+    }
+}
+
 AuctionSim* AuctionSim::_instance = nullptr;
 
 AuctionSim::AuctionSim() : WorldScript("AuctionSim")
 {
     _instance = this;
     isEnabled = sConfigMgr->GetOption<bool>("AuctionSim.Enabled", false);
+    startupScan = sConfigMgr->GetOption<bool>("AuctionSim.StartupScan", false);
+}
+
+bool AuctionSim::EnsureConfigFileExists()
+{
+    std::filesystem::path dir = std::filesystem::path(sConfigMgr->GetConfigPath()) / "modules";
+    std::filesystem::path livePath = dir / "auctionsim.conf";
+    std::filesystem::path distPath = dir / "auctionsim.conf.dist";
+
+    std::error_code ec;
+    if (std::filesystem::exists(livePath, ec))
+    {
+        return false;
+    }
+    if (!std::filesystem::exists(distPath, ec))
+    {
+        LOG_ERROR("module", "AuctionSim: neither auctionsim.conf nor auctionsim.conf.dist found in {}", dir.string());
+        return false;
+    }
+
+    std::filesystem::copy_file(distPath, livePath, ec);
+    if (ec)
+    {
+        LOG_ERROR("module", "AuctionSim: couldn't create {}: {}", livePath.string(), ec.message());
+        return false;
+    }
+    LOG_INFO("module", "AuctionSim: created auctionsim.conf from auctionsim.conf.dist");
+    return true;
 }
 
 void AuctionSim::OnStartup()
 {
+    if (EnsureConfigFileExists())
+    {
+        // File didn't exist when ConfigMgr loaded module configs; pull it in now so
+        // ASConfig and Bot below read real values instead of defaults.
+        sConfigMgr->Reload();
+    }
+
+    // Load auctionsim.dat unconditionally: the addon shows/edits the listing table
+    // whether or not the module is enabled.
+    {
+        bool datOk = true;
+        config = std::make_unique<ASConfig>(sConfigMgr->GetConfigPath() + "/modules/auctionsim.dat", datOk);
+        if (!datOk)
+        {
+            LOG_ERROR("module", "AuctionSim: auctionsim.dat failed to load");
+            config.reset();
+        }
+    }
+
     if (!isEnabled)
     {
+        // The addon still works while disabled (replies are self-whispers), so a GM
+        // can configure everything and enable without a restart.
         LOG_WARN("module", "AuctionSim is disabled!");
         return;
     }
 
-    bot = std::make_unique<Bot>(this->isEnabled);
-    if (!isEnabled)
+    if (!config)
     {
-        return;
-    }
-
-    std::string path = sConfigMgr->GetConfigPath() + "/modules/auctionsim.dat";
-
-    config = std::make_unique<ASConfig>(path, isEnabled);
-    if (!isEnabled)
-    {
+        LOG_ERROR("module", "AuctionSim: disabling -- auctionsim.dat is required to run");
+        isEnabled = false;
         return;
     }
 
@@ -51,10 +104,13 @@ void AuctionSim::OnStartup()
         return;
     }
 
-    listingService = std::make_unique<AuctionListingService>(*bot, *config);
-    buyingService = std::make_unique<AuctionBuyingService>(*bot);
+    if (!StartOrReloadBot(false))  // config is fresh at boot; no reload
+    {
+        isEnabled = false;
+        return;
+    }
 
-    if (sConfigMgr->GetOption<bool>("AuctionSim.StartupScan", false))
+    if (this->startupScan)
     {
         ScanAuctions(AuctionHouseId::Alliance);
         ScanAuctions(AuctionHouseId::Horde);
@@ -62,9 +118,47 @@ void AuctionSim::OnStartup()
     }
 }
 
+bool AuctionSim::StartOrReloadBot(bool reloadConfig)
+{
+    if (!config)
+    {
+        return false;
+    }
+
+    // "Set Bot Char" just rewrote BotAccountID/BotCharacterID; reload so Bot's ctor
+    // and the mail hook see them. A failed reload leaves any running bot alone.
+    if (reloadConfig && !sConfigMgr->Reload())
+    {
+        return false;
+    }
+
+    // Throwaway flag: a bad/unset id must not clear the module's isEnabled or kill a
+    // running bot.
+    bool built = true;
+    auto newBot = std::make_unique<Bot>(built);
+    if (!built || !newBot->GetPlayer())
+    {
+        return false;
+    }
+
+    // Retire the old bot rather than destroying it (its headless Player is only ever
+    // torn down at shutdown); rebuild the services, which hold a Bot&.
+    if (bot)
+    {
+        retiredBots.push_back(std::move(bot));
+    }
+    bot = std::move(newBot);
+    listingService = std::make_unique<AuctionListingService>(*bot, *config);
+    buyingService = std::make_unique<AuctionBuyingService>(*bot);
+
+    LOG_INFO("module", "AuctionSim: bot active (character {})", bot->GetCharacterID());
+    return true;
+}
+
 void AuctionSim::OnUpdate(uint32 diff)
 {
-    if (!this->isEnabled) return;
+    // isEnabled can be set before a bot exists (enabled via the addon), so check both
+    if (!this->isEnabled || !buyingService) return;
 
     scanTimer += diff;
 
@@ -179,7 +273,7 @@ uint32 AuctionSim::CleanOverCapAuctions()
             }
 
             auction->DeleteFromDB(trans);
-            sAuctionMgr->RemoveAItem(auction->item_guid);
+            sAuctionMgr->RemoveAItem(auction->item_guid, true, &trans);
             sAuctionMgr->GetAuctionsMapByHouseId(houseId)->RemoveAuction(auction);
             it = auctions.erase(it);
             removedCount++;
@@ -207,7 +301,7 @@ void AuctionSim::DeleteAuctions()
         if (it->second->owner == botPlayerGUID)
         {
             it->second->DeleteFromDB(trans);
-            sAuctionMgr->RemoveAItem(it->second->item_guid);
+            sAuctionMgr->RemoveAItem(it->second->item_guid, true, &trans);
             sAuctionMgr->GetAuctionsMapByHouseId(AuctionHouseId::Alliance)->RemoveAuction(it->second);
             it = allianceAuctions.erase(it);
         }
@@ -223,7 +317,7 @@ void AuctionSim::DeleteAuctions()
         if (it->second->owner == botPlayerGUID)
         {
             it->second->DeleteFromDB(trans);
-            sAuctionMgr->RemoveAItem(it->second->item_guid);
+            sAuctionMgr->RemoveAItem(it->second->item_guid, true, &trans);
             sAuctionMgr->GetAuctionsMapByHouseId(AuctionHouseId::Horde)->RemoveAuction(it->second);
             it = hordeAuctions.erase(it);
         }
@@ -237,16 +331,16 @@ void AuctionSim::DeleteAuctions()
 }
 
 void AuctionSimMailManager::OnBeforeMailDraftSendMailTo(
-    MailDraft* mailDraft,
+    MailDraft* /*mailDraft*/,
     MailReceiver const& receiver,
     MailSender const& sender,
-    MailCheckMask& checked,
-    uint32& deliver_delay,
-    uint32& custom_expiration,
+    MailCheckMask& /*checked*/,
+    uint32& /*deliver_delay*/,
+    uint32& /*custom_expiration*/,
     bool& deleteMailItemsFromDB,
     bool& sendMail)
 {
-    if (receiver.GetPlayerGUIDLow() == sConfigMgr->GetOption<int>("AuctionSim.BotCharacterID", 0))
+    if (IsBotCharacter(receiver.GetPlayerGUIDLow()))
     {
         sendMail = false;
         if (sender.GetMailMessageType() == MAIL_AUCTION)
@@ -255,6 +349,7 @@ void AuctionSimMailManager::OnBeforeMailDraftSendMailTo(
         }
     }
 }
+
 void AddAuctionSimScripts()
 {
     new AuctionSim();

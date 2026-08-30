@@ -1,33 +1,10 @@
-# AuctionSim: A Module For AzerothCore WoTLK 3.3.5a
+-- Text for the Bot Manager's Help button. It's plain text between the [[ and ]]
+-- markers below -- edit it however you like.
 
-AuctionSim populates and maintains your realm's auction house using price data scraped from a live WoW 3.3.5a economy (Lordaeron, Warmane). Unlike the classic ah-bot module, it isn't limited to a handful of item categories and doesn't price items based on their vendor sell price. It uses real observed mean/min/max prices, with separate price tables for Alliance and Horde (no neutral AH support). Listing behavior is fully configurable per item class and quality. Unlike other auction managers, tt runs very fast and can manage very large auction houses with no lag during scans.
+AHSim = AHSim or {}
 
-## How it works
-
-Every hour (fixed, not configurable), AuctionSim scans both auction houses:
-
-- **Listing**: for each item class/quality bucket, it lists new items up to the percentage targets set in the config, picking a random quantity and a buyout price rolled around the item's known mean price.
-- **Buying**: for each auction it doesn't already own, if the price is at or under the item's known mean, it's always queued to buy. If the price is above mean but still under the item's known maximum, it's queued with some probability (randomized each scan, to mimic natural demand variance between real players) rather than always or never. Queued purchases execute within 45 minutes of being queued.
-- Optional `MaxRequiredLevel`/`MaxItemLevel` caps stop it from listing gear above your realm's level, for progression servers running below the max level.
-
-## Installation
-
-1. From your AzerothCore `modules` directory:
-   ```
-   git clone https://github.com/Moloch17/mod-auctionsim.git
-   ```
-2. Rebuild AzerothCore.
-
-**Notes:**
-- If you've previously used ah-bot or ah-bot-plus, there's no conflict, but the two cannot run at the same time -- disable other auction house bot modules before enabling this one.
-- Not intended for use with combined auction house enabled.
-- AuctionSim is disabled by default.
-
-### Configuring the Module Using the Companion Addon
-
-This module can be fully configured using a companion interface addon. Copy the ahsim folder in interface_addon into your game's Interface/Addons directory. Once logged in with an account that has GM privileges, run /auctionsim or /ahsim to open the configuration UI. Click the help button for step by step instructions for configuring the module. The same help text in the help menu is reproduced below:
-
-```AuctionSim - First-Time Setup
+AHSim.helpText = [[
+AuctionSim - First-Time Setup
 =============================
 
 AuctionSim runs a bot character that lists and buys items on the Auction House 
@@ -100,6 +77,5 @@ Help            This window.
 Notes
 -----
 - Mail the bot would get from its own auctions is discarded automatically.
-- Everything set here is written to auctionsim.conf, so it survives a restart.```
-
-[<img src="images/addon.png">]
+- Everything set here is written to auctionsim.conf, so it survives a restart.
+]]

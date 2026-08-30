@@ -14,7 +14,7 @@ namespace AuctionPricing
     int CalculateItemsToList(int targetCount, int existingCount);
     uint32 RollQuantity(uint32 maxStackSize);
     bool IsListablePrice(uint32 meanPrice);
-    uint32 RollBuyoutPrice(uint32 meanPrice, uint32 quantity);
+    uint32 RollBuyoutPrice(uint32 minPrice, uint32 meanPrice, uint32 maxPrice, uint32 quantity);
     uint32 RollAuctionDuration();
 
     // A scan pass's randomized willingness to buy above the mean price, mimicking

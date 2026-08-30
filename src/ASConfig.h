@@ -33,6 +33,25 @@ public:
     // Linear search within one (houseId, itemClass, quality) bucket for a specific item's price data.
     ScannedItem const* FindScannedItem(AuctionHouseId houseId, uint32 itemClass, uint32 quality, uint32 itemID) const;
 
+    // One (itemClass, quality) mask cell, addressed the same way the addon bridge's wire
+    // protocol addresses it: percentConfigKey matches the config key suffix (e.g.
+    // "ConsumablePercent"), qualityLabel matches the quality token (e.g. "GREY").
+    struct MaskKeyEntry
+    {
+        std::string_view percentConfigKey;
+        std::string_view qualityLabel;
+        uint32 itemClass;
+        uint32 quality;
+    };
+
+    // Resolves a wire key formatted "<percentConfigKey>.<qualityLabel>" (e.g.
+    // "ConsumablePercent.GREY") to its ItemSelectionMask indices. False if unrecognized.
+    static bool ResolveMaskKey(std::string_view key, uint32& outItemClass, uint32& outQuality);
+
+    // Every (percentConfigKey, qualityLabel) pair -- MAX_ITEM_CLASS * 7 entries -- for
+    // enumerating the full mask grid (e.g. to answer a GETCONFIG request).
+    static std::vector<MaskKeyEntry> const& AllMaskKeys();
+
 private:
     void UnpackQualityString(std::string_view qualityString, int itemClass);
 };

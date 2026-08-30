@@ -155,12 +155,14 @@ namespace
 
     TestResult TestRollBuyoutPriceSanity()
     {
+        constexpr uint32 minPrice = 60;
         constexpr uint32 meanPrice = 100;
+        constexpr uint32 maxPrice = 150;
         constexpr uint32 quantity = 5;
         for (int i = 0; i < 50; i++)
         {
-            uint32 buyout = AuctionPricing::RollBuyoutPrice(meanPrice, quantity);
-            if (buyout == 0 || buyout > quantity * meanPrice * 2)
+            uint32 buyout = AuctionPricing::RollBuyoutPrice(minPrice, meanPrice, maxPrice, quantity);
+            if (buyout < quantity * minPrice || buyout > quantity * maxPrice)
             {
                 return Fail("RollBuyoutPrice sanity", Acore::StringFormat("rolled {} copper", buyout));
             }
