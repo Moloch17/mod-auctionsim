@@ -104,4 +104,4 @@ Notes
 - Everything set here is written to auctionsim.conf, so it survives a restart.
 ```
 
-[<img src="images/addon.png">]
+<img src="images/addon.png">
