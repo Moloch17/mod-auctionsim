@@ -23,7 +23,7 @@ Every hour (fixed, not configurable), AuctionSim scans both auction houses:
 - Not intended for use with combined auction house enabled.
 - AuctionSim is disabled by default.
 
-### Configuring the Module Using the Companion Addon
+## Configuring the Module Using the Companion Addon
 
 This module can be fully configured using a companion interface addon. Copy the ahsim folder in interface_addon into your game's Interface/Addons directory. Once logged in with an account that has GM privileges, run /auctionsim or /ahsim to open the configuration UI. Click the help button for step by step instructions for configuring the module. The same help text in the help menu is reproduced below:
 
