@@ -82,17 +82,18 @@ AuctionEntry* AuctionListingService::ListOneItem(
     uint32 buyout =
         AuctionPricing::RollBuyoutPrice(scan.GetMinPrice(), scan.GetMeanPrice(), scan.GetMaxPrice(), quantity);
 
-    // Item::CreateItem's randomPropertyId is declared uint32 but is passed straight into
-    // SetItemRandomProperties(int32) -- negative (enchantment/suffix table) values round-trip
-    // correctly through the bit-preserving uint32<->int32 conversion.
+    // The item only ever lives in the auction house, never in the bot's inventory or
+    // item-update queue -- otherwise Player::_SaveInventory trips over it (bag 255 /
+    // slot 0) once the bot character is also logged in. Create it ownerless, stamp the
+    // owner guid, and let SaveToDB persist it in `trans` (committed async, like the
+    // core's own HandleAuctionSellItem).
     //
-    // The item is never placed in an inventory slot, so it must not go through the bot
-    // player's item update queue: CreateItem already stamps the owner GUID, and
-    // SaveToDB below persists it in `trans`. Queueing it instead leaves a stray entry
-    // that Player::_SaveInventory later trips over (bag 255 / slot 0) when the bot
-    // character is also logged in.
-    Item* item = Item::CreateItem(
-        scan.GetItemID(), quantity, _bot.GetPlayer().get(), false, static_cast<uint32>(scan.GetSuffixID()));
+    // randomPropertyId is declared uint32 but is passed straight into
+    // SetItemRandomProperties(int32); negative (enchantment/suffix table) values
+    // round-trip correctly through the bit-preserving uint32<->int32 conversion.
+    Item* item =
+        Item::CreateItem(scan.GetItemID(), quantity, nullptr, false, static_cast<uint32>(scan.GetSuffixID()));
+    item->SetOwnerGUID(_bot.GetPlayer().get()->GetGUID());
 
     AuctionEntry* auction = new AuctionEntry();
     auction->Id = sObjectMgr->GenerateAuctionID();

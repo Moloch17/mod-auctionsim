@@ -82,8 +82,11 @@ In the "Listing Settings" grid on the right:
 
 5. First run
 ------------
-- Click "Scan". The bot lists new auctions and queues buys for anything
-  underpriced. Queued buys are spread over time, not done all at once.
+- Click "Scan". The bot lists new auctions and queues items to buy. Queued buys
+  are spread over time, not done all at once.
+- Note: Searching the auction house after running a scan while logged in as the
+  bot character can take a little while for the auction db to update if there are
+  a lot of new auctions.
 - After that the module scans on its own on a timer.
 
 
