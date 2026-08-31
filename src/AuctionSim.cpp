@@ -209,7 +209,7 @@ void AuctionSim::ScanAuctions(AuctionHouseId _AuctionHouseId)
 
         uint32 pricePerItem = auction->buyout / auction->itemCount;
         buyingService->ConsiderForPurchase(
-            auction, pricePerItem, scannedItem->GetMeanPrice(), scannedItem->GetMaxPrice());
+            auction, pricePerItem, scannedItem->GetMarketPrice(), scannedItem->GetBuyCeiling());
     }
 
     buyingService->SortQueue();

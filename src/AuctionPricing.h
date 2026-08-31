@@ -13,8 +13,15 @@ namespace AuctionPricing
     int CalculateTargetListingCount(float mask, size_t poolSize);
     int CalculateItemsToList(int targetCount, int existingCount);
     uint32 RollQuantity(uint32 maxStackSize);
-    bool IsListablePrice(uint32 meanPrice);
-    uint32 RollBuyoutPrice(uint32 minPrice, uint32 meanPrice, uint32 maxPrice, uint32 quantity);
+    bool IsListablePrice(uint32 marketPrice);
+
+    // Rolls a full-stack buyout by drawing a per-unit price from a split-normal
+    // curve across [low, high] that peaks at marketPrice, then multiplying by
+    // quantity. low/high are the item's outlier-trimmed range. When sampleCount is
+    // too small (or the trimmed range has no width) there is no real distribution
+    // to sample, so a small synthetic band is placed around marketPrice instead --
+    // enough that repeat listings of the same item aren't priced identically.
+    uint32 RollBuyoutPrice(uint32 low, uint32 marketPrice, uint32 high, uint32 quantity, uint32 sampleCount);
     uint32 RollAuctionDuration();
 
     // A scan pass's randomized willingness to buy above the mean price, mimicking
@@ -30,15 +37,16 @@ namespace AuctionPricing
     // expires. Always >= 1.
     uint32 CalculateRemainingScans(time_t remainingSeconds);
 
-    // True if a purchase should be made now. Always buys at/under meanPrice; never
-    // buys above maxPrice; otherwise probabilistic based on where pricePerItem falls
-    // between meanPrice and maxPrice against this scan's tolerance boundary. The 50%/10%
-    // chances are cumulative over the auction's full remaining lifetime, so this is
-    // amortized per scan using remainingScans.
+    // True if a purchase should be made now. Always buys at/under marketPrice (the
+    // robust typical price); never buys above ceilingPrice (the 75th percentile);
+    // otherwise probabilistic based on where pricePerItem falls between the two
+    // against this scan's tolerance boundary. The 50%/10% chances are cumulative
+    // over the auction's full remaining lifetime, so this is amortized per scan
+    // using remainingScans.
     bool ShouldBuyAtPrice(
         uint32 pricePerItem,
-        uint32 meanPrice,
-        uint32 maxPrice,
+        uint32 marketPrice,
+        uint32 ceilingPrice,
         BuyTolerance const& tolerance,
         uint32 remainingScans);
 

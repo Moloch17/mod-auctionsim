@@ -39,7 +39,7 @@ void AuctionListingService::ListNewAuctions(
             {
                 ScannedItem const& scan = *pool[urand(0, static_cast<uint32>(pool.size()) - 1)];
 
-                if (!AuctionPricing::IsListablePrice(scan.GetMeanPrice()))
+                if (!AuctionPricing::IsListablePrice(scan.GetMarketPrice()))
                 {
                     itemsToPick--;
                     continue;
@@ -79,8 +79,8 @@ AuctionEntry* AuctionListingService::ListOneItem(
     }
 
     uint32 quantity = AuctionPricing::RollQuantity(proto->GetMaxStackSize());
-    uint32 buyout =
-        AuctionPricing::RollBuyoutPrice(scan.GetMinPrice(), scan.GetMeanPrice(), scan.GetMaxPrice(), quantity);
+    uint32 buyout = AuctionPricing::RollBuyoutPrice(
+        scan.GetListLow(), scan.GetMarketPrice(), scan.GetListHigh(), quantity, scan.GetSampleCount());
 
     // The item only ever lives in the auction house, never in the bot's inventory or
     // item-update queue -- otherwise Player::_SaveInventory trips over it (bag 255 /

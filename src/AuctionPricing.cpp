@@ -11,9 +11,16 @@ namespace
     constexpr uint32 kMinListablePrice = 3;
 
     // Std deviation divisor for RollBuyoutPrice's split-normal curve: each side's
-    // distance from the mean to its bound (min or max) is treated as this many
-    // standard deviations, so draws land at the true edge only in the rare tail.
+    // distance from the market price to its bound is treated as this many standard
+    // deviations, so draws land at the true edge only in the rare tail.
     constexpr float kBuyoutSigmaDivisor = 3.0f;
+
+    // Below this many observed listings the trimmed low/high isn't a trustworthy
+    // spread (with 1-3 samples it often collapses to a single point). RollBuyoutPrice
+    // falls back to a small synthetic band of +/- kThinSampleJitter around the
+    // market price so repeat listings of a rarely-seen item still vary a little.
+    constexpr uint32 kMinSamplesForSpread = 4;
+    constexpr float kThinSampleJitter = 0.08f;
     constexpr uint32 kMinDurationSeconds = 3600;   // 1 hour
     constexpr uint32 kMaxDurationSeconds = 43200;  // 12 hours
 
@@ -65,27 +72,45 @@ namespace AuctionPricing
         return urand(2, maxStackSize - 1);
     }
 
-    bool IsListablePrice(uint32 meanPrice)
+    bool IsListablePrice(uint32 marketPrice)
     {
-        return meanPrice >= kMinListablePrice;
+        return marketPrice >= kMinListablePrice;
     }
 
-    uint32 RollBuyoutPrice(uint32 minPrice, uint32 meanPrice, uint32 maxPrice, uint32 quantity)
+    uint32 RollBuyoutPrice(uint32 low, uint32 marketPrice, uint32 high, uint32 quantity, uint32 sampleCount)
     {
-        if (maxPrice <= minPrice)
+        if (marketPrice == 0)
         {
-            return quantity * meanPrice;
+            return quantity;  // caller should have filtered via IsListablePrice
         }
 
-        // Split-normal (asymmetric bell) curve spanning the item's full scanned
-        // min..max range, peaking at meanPrice. Each side gets its own standard
-        // deviation so an off-center mean still produces a natural-looking curve
-        // rather than a lopsided clamp. Draws are rejected and re-rolled instead of
-        // clamped, so the shape isn't distorted by piling probability up at the edges;
-        // with min/max sitting ~3 sigma out, a redraw is needed only rarely.
-        float meanF = static_cast<float>(meanPrice);
-        float sigmaLow = std::max((meanF - static_cast<float>(minPrice)) / kBuyoutSigmaDivisor, 1.0f);
-        float sigmaHigh = std::max((static_cast<float>(maxPrice) - meanF) / kBuyoutSigmaDivisor, 1.0f);
+        // No trustworthy spread to sample from: put a small symmetric band around
+        // the market price so a handful of copies of the same item don't all show
+        // the exact same number.
+        if (sampleCount < kMinSamplesForSpread || high <= low)
+        {
+            low = static_cast<uint32>(static_cast<float>(marketPrice) * (1.0f - kThinSampleJitter));
+            high = static_cast<uint32>(static_cast<float>(marketPrice) * (1.0f + kThinSampleJitter));
+        }
+
+        // Keep the market price inside the band even if the trimmed stats put it
+        // slightly outside (rounding, an off-centre adjusted median, etc.).
+        low = std::min(low, marketPrice);
+        high = std::max(high, marketPrice);
+
+        if (high <= low)
+        {
+            return quantity * marketPrice;
+        }
+
+        // Split-normal (asymmetric bell) across [low, high], peaking at marketPrice.
+        // Each side gets its own standard deviation so an off-centre market price
+        // still yields a natural curve. Draws outside the band are re-rolled rather
+        // than clamped so the shape isn't distorted; with the bounds ~3 sigma out a
+        // redraw is rare.
+        float marketF = static_cast<float>(marketPrice);
+        float sigmaLow = std::max((marketF - static_cast<float>(low)) / kBuyoutSigmaDivisor, 1.0f);
+        float sigmaHigh = std::max((static_cast<float>(high) - marketF) / kBuyoutSigmaDivisor, 1.0f);
         std::normal_distribution<float> standardNormal(0.0f, 1.0f);
 
         float price;
@@ -93,14 +118,12 @@ namespace AuctionPricing
         do
         {
             float z = standardNormal(RandomEngine::Instance());
-            price = meanF + z * (z < 0.0f ? sigmaLow : sigmaHigh);
-        } while ((price < minPrice || price > maxPrice) && ++attempts < 64);
+            price = marketF + z * (z < 0.0f ? sigmaLow : sigmaHigh);
+        } while ((price < low || price > high) && ++attempts < 64);
 
-        // Only reachable with malformed scan data (e.g. mean outside [min, max]);
-        // guards against spinning forever rather than shaping the normal case.
-        price = std::clamp(price, static_cast<float>(minPrice), static_cast<float>(maxPrice));
+        price = std::clamp(price, static_cast<float>(low), static_cast<float>(high));
 
-        return quantity * static_cast<uint32>(price);
+        return quantity * std::max(1u, static_cast<uint32>(price));
     }
 
     uint32 RollAuctionDuration() { return urand(kMinDurationSeconds, kMaxDurationSeconds); }
@@ -118,22 +141,22 @@ namespace AuctionPricing
 
     bool ShouldBuyAtPrice(
         uint32 pricePerItem,
-        uint32 meanPrice,
-        uint32 maxPrice,
+        uint32 marketPrice,
+        uint32 ceilingPrice,
         BuyTolerance const& tolerance,
         uint32 remainingScans)
     {
-        if (pricePerItem <= meanPrice)
+        if (pricePerItem <= marketPrice)
         {
             return true;
         }
-        if (pricePerItem > maxPrice || maxPrice <= meanPrice)
+        if (pricePerItem > ceilingPrice || ceilingPrice <= marketPrice)
         {
             return false;
         }
 
         float percentPosition =
-            static_cast<float>(pricePerItem - meanPrice) / static_cast<float>(maxPrice - meanPrice);
+            static_cast<float>(pricePerItem - marketPrice) / static_cast<float>(ceilingPrice - marketPrice);
         float targetChance = percentPosition <= tolerance.boundaryPercent ? kNearTierBuyChance : kFarTierBuyChance;
 
         return roll_chance_f(AmortizeOverScans(targetChance, remainingScans) * 100.0f);

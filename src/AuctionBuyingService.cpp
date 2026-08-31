@@ -11,7 +11,7 @@ AuctionBuyingService::AuctionBuyingService(Bot& bot) : _bot(bot) {}
 void AuctionBuyingService::RollTolerance() { _tolerance = AuctionPricing::RollBuyTolerance(); }
 
 void AuctionBuyingService::ConsiderForPurchase(
-    AuctionEntry* auction, uint32 pricePerItem, uint32 meanPrice, uint32 maxPrice)
+    AuctionEntry* auction, uint32 pricePerItem, uint32 marketPrice, uint32 ceilingPrice)
 {
     if (_queuedAuctionIds.count(auction->Id) > 0)
     {
@@ -21,7 +21,7 @@ void AuctionBuyingService::ConsiderForPurchase(
     time_t now = GameTime::GetGameTime().count();
     uint32 remainingScans = AuctionPricing::CalculateRemainingScans(auction->expire_time - now);
 
-    if (!AuctionPricing::ShouldBuyAtPrice(pricePerItem, meanPrice, maxPrice, _tolerance, remainingScans))
+    if (!AuctionPricing::ShouldBuyAtPrice(pricePerItem, marketPrice, ceilingPrice, _tolerance, remainingScans))
     {
         return;
     }

@@ -155,19 +155,68 @@ namespace
 
     TestResult TestRollBuyoutPriceSanity()
     {
-        constexpr uint32 minPrice = 60;
-        constexpr uint32 meanPrice = 100;
-        constexpr uint32 maxPrice = 150;
+        constexpr uint32 low = 60;
+        constexpr uint32 market = 100;
+        constexpr uint32 high = 150;
         constexpr uint32 quantity = 5;
+
+        // Healthy sample: draws stay within the trimmed [low, high] band.
         for (int i = 0; i < 50; i++)
         {
-            uint32 buyout = AuctionPricing::RollBuyoutPrice(minPrice, meanPrice, maxPrice, quantity);
-            if (buyout < quantity * minPrice || buyout > quantity * maxPrice)
+            uint32 buyout = AuctionPricing::RollBuyoutPrice(low, market, high, quantity, 50);
+            if (buyout < quantity * low || buyout > quantity * high)
             {
-                return Fail("RollBuyoutPrice sanity", Acore::StringFormat("rolled {} copper", buyout));
+                return Fail("RollBuyoutPrice sanity", Acore::StringFormat("healthy sample rolled {} copper", buyout));
             }
         }
+
+        // Thin sample with no observed spread: falls back to a small synthetic
+        // band around the market price rather than pinning every listing to it.
+        for (int i = 0; i < 50; i++)
+        {
+            uint32 buyout = AuctionPricing::RollBuyoutPrice(market, market, market, quantity, 1);
+            if (buyout < quantity * 90 || buyout > quantity * 110)
+            {
+                return Fail("RollBuyoutPrice sanity", Acore::StringFormat("thin sample rolled {} copper", buyout));
+            }
+        }
+
         return Pass("RollBuyoutPrice sanity");
+    }
+
+    TestResult TestScannedItemParse()
+    {
+        // Old 6-field format is rejected.
+        if (ScannedItem::TryParse("6:6543:-19:23229:8000:99000"))
+        {
+            return Fail("ScannedItem parse", "6-field (old format) line was accepted");
+        }
+
+        auto parsed = ScannedItem::TryParse(
+            "6:6543:-19:12:8000:99000:23229:30000:8000:19000:30843:8100:31686:23000:29500:8000");
+        if (!parsed)
+        {
+            return Fail("ScannedItem parse", "valid 16-field line was rejected");
+        }
+
+        ScannedItem const& s = *parsed;
+        if (s.GetFactionNum() != 6 || s.GetItemID() != 6543 || s.GetSuffixID() != -19 || s.GetSampleCount() != 12)
+        {
+            return Fail("ScannedItem parse", "identity fields did not round-trip");
+        }
+        if (s.GetMarketPrice() != 29500)  // adjMedian
+        {
+            return Fail("ScannedItem parse", Acore::StringFormat("market price {} (expected adjMedian 29500)", s.GetMarketPrice()));
+        }
+        if (s.GetListLow() != 8100 || s.GetListHigh() != 31686)  // adjLow / adjHigh
+        {
+            return Fail("ScannedItem parse", "list band did not match adjLow/adjHigh");
+        }
+        if (s.GetBuyCeiling() != 30843)  // q3
+        {
+            return Fail("ScannedItem parse", Acore::StringFormat("buy ceiling {} (expected q3 30843)", s.GetBuyCeiling()));
+        }
+        return Pass("ScannedItem parse");
     }
 
     TestResult TestRollBuyToleranceBounds()
@@ -408,7 +457,7 @@ namespace
     {
         auto trans = CharacterDatabase.BeginTransaction();
         auction->DeleteFromDB(trans);
-        sAuctionMgr->RemoveAItem(auction->item_guid);
+        sAuctionMgr->RemoveAItem(auction->item_guid, true, &trans);
         sAuctionMgr->GetAuctionsMapByHouseId(houseId)->RemoveAuction(auction);
         CharacterDatabase.CommitTransaction(trans);
     }
@@ -427,6 +476,7 @@ namespace AuctionSimTests
             TestRollQuantityBounds(),
             TestIsListablePriceBoundary(),
             TestRollAuctionDurationBounds(),
+            TestScannedItemParse(),
             TestRollBuyoutPriceSanity(),
             TestRollBuyToleranceBounds(),
             TestShouldBuyAtPriceBoundaries(),

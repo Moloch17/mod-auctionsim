@@ -30,7 +30,10 @@ public:
     // for purchase per this scan's tolerance profile and the auction's remaining lifetime.
     // A no-op if this auction is already queued (e.g. a re-scan before the first
     // queued purchase fired), so an auction can never end up in the queue twice.
-    void ConsiderForPurchase(AuctionEntry* auction, uint32 pricePerItem, uint32 meanPrice, uint32 maxPrice);
+    // marketPrice / ceilingPrice are the item's robust typical price and 75th-
+    // percentile ceiling (see ScannedItem), not the raw scan mean/max.
+    void ConsiderForPurchase(
+        AuctionEntry* auction, uint32 pricePerItem, uint32 marketPrice, uint32 ceilingPrice);
 
     // Sorts the queue so the soonest-due purchase is processed first. Call once
     // after a scan pass has finished calling ConsiderForPurchase.
