@@ -78,7 +78,8 @@ AuctionEntry* AuctionListingService::ListOneItem(
         return nullptr;
     }
 
-    uint32 quantity = AuctionPricing::RollQuantity(proto->GetMaxStackSize());
+    uint32 quantity = AuctionPricing::RollStackSize(
+        scan.GetTypicalStackSize(), scan.GetStackLow(), scan.GetStackHigh(), proto->GetMaxStackSize());
     uint32 buyout = AuctionPricing::RollBuyoutPrice(
         scan.GetListLow(), scan.GetMarketPrice(), scan.GetListHigh(), quantity, scan.GetSampleCount());
 

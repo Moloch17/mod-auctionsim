@@ -109,22 +109,33 @@ namespace
         return Fail("FindScannedItem round-trip", "no ScanData entry resolves to a valid item_template to test with");
     }
 
-    TestResult TestRollQuantityBounds()
+    TestResult TestRollStackSizeBounds()
     {
-        for (uint32 maxStackSize : {1u, 2u, 5u, 20u, 200u})
+        for (uint32 itemMaxStack : {1u, 2u, 5u, 20u, 200u})
         {
             for (int i = 0; i < 50; i++)
             {
-                uint32 qty = AuctionPricing::RollQuantity(maxStackSize);
-                if (qty < 1 || qty > maxStackSize)
+                // typical/spread taken deliberately wider than itemMaxStack to
+                // exercise the clamp.
+                uint32 qty = AuctionPricing::RollStackSize(300, 1, 300, itemMaxStack);
+                if (qty < 1 || qty > itemMaxStack)
                 {
                     return Fail(
-                        "RollQuantity bounds",
-                        Acore::StringFormat("maxStackSize={} produced qty={}", maxStackSize, qty));
+                        "RollStackSize bounds",
+                        Acore::StringFormat("itemMaxStack={} produced qty={}", itemMaxStack, qty));
                 }
             }
         }
-        return Pass("RollQuantity bounds");
+
+        // Zero-width spread always yields the typical size (clamped).
+        for (int i = 0; i < 20; i++)
+        {
+            if (AuctionPricing::RollStackSize(20, 20, 20, 200) != 20)
+            {
+                return Fail("RollStackSize bounds", "zero-width spread did not return the typical size");
+            }
+        }
+        return Pass("RollStackSize bounds");
     }
 
     TestResult TestIsListablePriceBoundary()
@@ -215,6 +226,29 @@ namespace
         if (s.GetBuyCeiling() != 30843)  // q3
         {
             return Fail("ScannedItem parse", Acore::StringFormat("buy ceiling {} (expected q3 30843)", s.GetBuyCeiling()));
+        }
+        // 16-field row => equippable gear, stack size implicitly 1.
+        if (s.GetTypicalStackSize() != 1 || s.GetStackLow() != 1 || s.GetStackHigh() != 1)
+        {
+            return Fail("ScannedItem parse", "16-field row did not default stack size to 1");
+        }
+
+        // 28-field row: trailing 12 fields carry the real stack distribution.
+        //   stack: low2 high20 mean14 median20 mode20 q1=5 q3=20  adj: low2 high20 mean14 median20 mode20
+        auto stacked = ScannedItem::TryParse(
+            "2:40211:0:114:234000:450000:251904:251999:251999:244999:251999:235000:260000:248340:251999:251999"
+            ":2:20:14:20:20:5:20:2:20:14:20:20");
+        if (!stacked)
+        {
+            return Fail("ScannedItem parse", "valid 28-field line was rejected");
+        }
+        if (stacked->GetTypicalStackSize() != 20 || stacked->GetStackLow() != 2 || stacked->GetStackHigh() != 20)
+        {
+            return Fail(
+                "ScannedItem parse",
+                Acore::StringFormat(
+                    "stack stats: typical={} low={} high={} (expected 20/2/20)",
+                    stacked->GetTypicalStackSize(), stacked->GetStackLow(), stacked->GetStackHigh()));
         }
         return Pass("ScannedItem parse");
     }
@@ -473,7 +507,7 @@ namespace AuctionSimTests
             TestBothFactionsHavePriceData(config),
             TestListingMasksConfigured(config),
             TestFindScannedItemRoundTrip(config),
-            TestRollQuantityBounds(),
+            TestRollStackSizeBounds(),
             TestIsListablePriceBoundary(),
             TestRollAuctionDurationBounds(),
             TestScannedItemParse(),

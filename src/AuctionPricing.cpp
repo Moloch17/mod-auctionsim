@@ -2,13 +2,16 @@
 #include <algorithm>
 #include <cmath>
 #include <random>
+#include <utility>
 #include "Random.h"
 
 namespace
 {
-    constexpr uint32 kLowQtyRollCeiling = 33;   // roll < this -> qty = 1
-    constexpr uint32 kHighQtyRollFloor = 66;    // roll > this -> qty = maxStackSize
     constexpr uint32 kMinListablePrice = 3;
+
+    // Share of new listings that use the market's conventional stack size for the
+    // item; the rest draw a size from the outlier-trimmed observed range.
+    constexpr float kStackTypicalChance = 0.70f;
 
     // Std deviation divisor for RollBuyoutPrice's split-normal curve: each side's
     // distance from the market price to its bound is treated as this many standard
@@ -52,24 +55,31 @@ namespace AuctionPricing
         return targetCount - existingCount;
     }
 
-    uint32 RollQuantity(uint32 maxStackSize)
+    uint32 RollStackSize(uint32 typical, uint32 spreadLow, uint32 spreadHigh, uint32 itemMaxStack)
     {
-        // Not enough headroom to roll a meaningful middle value.
-        if (maxStackSize <= 2)
-        {
-            return maxStackSize;
-        }
-
-        uint32 roll = urand(0, 99);
-        if (roll < kLowQtyRollCeiling)
+        if (itemMaxStack <= 1)
         {
             return 1;
         }
-        if (roll > kHighQtyRollFloor)
+
+        // Clamp the market figures to what this item can actually stack to -- scan
+        // data and the item_template can disagree (data drift, hotfixes).
+        typical = std::clamp(typical, 1u, itemMaxStack);
+        spreadLow = std::clamp(spreadLow, 1u, itemMaxStack);
+        spreadHigh = std::clamp(spreadHigh, 1u, itemMaxStack);
+        if (spreadHigh < spreadLow)
         {
-            return maxStackSize;
+            std::swap(spreadLow, spreadHigh);
         }
-        return urand(2, maxStackSize - 1);
+
+        // Most listings use the size the market conventionally posts; a minority
+        // vary within the observed (outlier-trimmed) range so the AH doesn't look
+        // like every seller posted the exact same stack.
+        if (spreadHigh == spreadLow || roll_chance_f(kStackTypicalChance * 100.0f))
+        {
+            return typical;
+        }
+        return urand(spreadLow, spreadHigh);
     }
 
     bool IsListablePrice(uint32 marketPrice)

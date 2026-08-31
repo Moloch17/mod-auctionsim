@@ -12,7 +12,14 @@ namespace AuctionPricing
 
     int CalculateTargetListingCount(float mask, size_t poolSize);
     int CalculateItemsToList(int targetCount, int existingCount);
-    uint32 RollQuantity(uint32 maxStackSize);
+
+    // Rolls the stack size for a new listing from the item's observed stack-size
+    // distribution: most listings use `typical` (the size the market conventionally
+    // posts this item in), a minority draw from the outlier-trimmed observed range
+    // [spreadLow, spreadHigh]. Everything is clamped to [1, itemMaxStack]; an item
+    // that can't stack past 1 always returns 1.
+    uint32 RollStackSize(uint32 typical, uint32 spreadLow, uint32 spreadHigh, uint32 itemMaxStack);
+
     bool IsListablePrice(uint32 marketPrice);
 
     // Rolls a full-stack buyout by drawing a per-unit price from a split-normal

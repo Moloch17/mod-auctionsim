@@ -74,6 +74,11 @@ local function FriendlyName(classKey)
     return string.gsub(classKey, "Percent$", "")
 end
 
+-- Mask cells mirror auctionsim.conf's 4-digit form exactly (0050, 0300, 0000).
+local function FormatMaskValue(value)
+    return string.format("%04d", tonumber(value) or 0)
+end
+
 local function CreateLabel(parent, text, x, y)
     local fs = parent:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
     fs:SetPoint("TOPLEFT", x, y)
@@ -98,13 +103,13 @@ local function CreateSectionHeader(parent, text)
     return fs
 end
 
-local function CreateNumberBox(parent, x, y, width, onEnter)
+local function CreateNumberBox(parent, x, y, width, onEnter, maxLetters)
     local box = CreateFrame("EditBox", nil, parent)
     box:SetSize(width, ROW_HEIGHT)
     box:SetPoint("TOPLEFT", x, y)
     box:SetAutoFocus(false)
     box:SetNumeric(true)
-    box:SetMaxLetters(3)
+    box:SetMaxLetters(maxLetters or 3)
     box:SetFontObject("GameFontHighlightSmall")
     box:SetTextInsets(4, 4, 0, 0)
 
@@ -477,7 +482,9 @@ function AHSim.BuildWindow()
         maskEditBoxes[classKey] = {}
         for i, quality in ipairs(QUALITIES) do
             local box = CreateNumberBox(
-                content, LABEL_COLUMN_WIDTH + (i - 1) * COL_WIDTH, -y, COL_WIDTH - 4, function() end)
+                content, LABEL_COLUMN_WIDTH + (i - 1) * COL_WIDTH, -y, COL_WIDTH - 4,
+                function(self) self:SetText(FormatMaskValue(self:GetText())) end, 4)
+            box:SetScript("OnEditFocusLost", function(self) self:SetText(FormatMaskValue(self:GetText())) end)
             maskEditBoxes[classKey][quality] = box
         end
         y = y + ROW_HEIGHT
@@ -525,7 +532,7 @@ AHSim:RegisterHandler("CONFIG", function(key, value)
     else
         local classKey, quality = string.match(key, "^(.-)%.(.+)$")
         if classKey and maskEditBoxes[classKey] and maskEditBoxes[classKey][quality] then
-            maskEditBoxes[classKey][quality]:SetText(value)
+            maskEditBoxes[classKey][quality]:SetText(FormatMaskValue(value))
         end
     end
 end)

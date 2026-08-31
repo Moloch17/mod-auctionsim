@@ -1,38 +1,63 @@
-// ah_parser.cpp
+// compile-data.cpp
 //
 // Parses an Auctioneer Auc-ScanData.lua SavedVariables file, decodes the
 // "ropes" field (see explanation below), and emits an output file whose
 // first line is the item count N, followed by N lines each formatted as:
 //
-//   factionId:itemID:enchantment:sampleCount:pricelow:pricehigh:meanprice:
-//   medianprice:modeprice:q1:q3:adjLow:adjHigh:adjMean:adjMedian:adjMode
+//   factionId:itemID:enchantment:sampleCount:
+//     priceLow:priceHigh:priceMean:priceMedian:priceMode:priceQ1:priceQ3:
+//     priceAdjLow:priceAdjHigh:priceAdjMean:priceAdjMedian:priceAdjMode:
+//     stackLow:stackHigh:stackMean:stackMedian:stackMode:stackQ1:stackQ3:
+//     stackAdjLow:stackAdjHigh:stackAdjMean:stackAdjMedian:stackAdjMode
 //
 // (colons above are just wrapped for line length -- it's one flat
-// colon-separated line per item/enchant, 16 fields total)
+// colon-separated line per item/enchant. ROWS ARE VARIABLE LENGTH: 16
+// fields when enchant != 0, 28 fields when enchant == 0. See the
+// "Compression" note below for why.)
 //
 // sampleCount is how many individual buyout listings fed that row's
 // stats -- read this before trusting the stats next to it; some items
 // will have thousands of listings behind them, others a small handful,
-// and the two shouldn't be treated with equal confidence.
+// and the two shouldn't be treated with equal confidence. It applies to
+// BOTH the price stats and the stack stats below, since both are
+// computed from the exact same set of records.
 //
-// pricelow/pricehigh/meanprice/medianprice/modeprice are the RAW stats
-// over every listing in the bucket -- what actually happened in the
-// market, outliers and all.
-//
-// q1/q3 are the 25th/75th percentile prices (linear interpolation, aka
-// the "R-7" method -- matches Excel's QUARTILE.INC), giving the middle
-// 50% price range independent of extreme values.
-//
-// adjLow/adjHigh/adjMean/adjMedian/adjMode are the same central-tendency
-// stats recomputed after dropping listings outside Tukey's outlier
-// fences [Q1 - 1.5*IQR, Q3 + 1.5*IQR] -- i.e. what the market normally
-// looks like once one-off troll listings or fat-fingered prices are
-// thrown out. See computeStats() for the full reasoning; short version:
-// IQR-based fences are the standard, distribution-free way to flag
-// outliers and don't assume prices are normally distributed (they
+// The price* fields are the per-unit buyout price stats (RAW = every
+// listing as-is; Q1/Q3 = 25th/75th percentile; Adj* = the same
+// central-tendency stats recomputed after dropping outliers via Tukey's
+// 1.5x-IQR fences). See computeStats() for the full reasoning; short
+// version: IQR-based fences are the standard, distribution-free way to
+// flag outliers and don't assume prices are normally distributed (they
 // aren't -- real AH price data is right-skewed).
 //
-// -----------------------------------------------------------------------
+// The stack* fields are the SAME statistical treatment (raw stats,
+// quartiles, outlier-adjusted stats) applied to stack size (COUNT)
+// instead of price. This tells you what stack size the market actually
+// expects for an item -- e.g. stackMode=20 for a common trade good means
+// listings almost always go up in stacks of 20, which matters if you
+// want your own listings to sell at a normal rate rather than sitting
+// unsold because they're an unusual size. Outlier trimming applies here
+// too (a single accidental stack-of-1 listing for an item everyone else
+// sells in 20s shouldn't skew stackMean), even though stack counts are
+// small bounded integers rather than continuous currency -- the same
+// IQR-fence math still works correctly on that kind of distribution, it
+// just tends to produce a very tight adjusted range when (as is common)
+// almost everyone lists in one or two conventional sizes.
+//
+// Compression: rows where enchant/suffix != 0 OMIT the trailing 12
+// stack* fields entirely (16 fields written, not 28). This is safe, not
+// approximate: in WoW, only equippable gear can ever roll a random-
+// property suffix, and equippable items always have a max stack size of
+// 1 -- so for these rows every one of the 12 stack fields would read
+// exactly "1", with zero exceptions (verified against real scan data:
+// 1,899/1,899 enchant!=0 rows had all-1 stack stats). enchant == 0 does
+// NOT reliably imply the item is stackable -- plenty of gear has no
+// random suffix either -- so those rows always keep the real stack
+// stats, since we can't safely predict them. A consumer parsing this
+// file should treat a row's field count itself as the signal: 16 fields
+// means "stack size is always 1, not written"; 28 fields means "see the
+// trailing 12 fields for the real stack distribution."
+//// -----------------------------------------------------------------------
 // Background: "ropes" is an array of Lua *source code* strings. Each one
 // is a chunk like  return {{...},{...},...}  that Auctioneer feeds through
 // loadstring()/pcall() to reconstitute a table of raw auction records.
@@ -150,6 +175,24 @@ static void skipWhitespaceAndCommas(const std::string& text, size_t& i) {
     }
 }
 
+// Like skipWhitespaceAndCommas, but also skips Lua "-- ..." line comments.
+// WoW's SavedVariables writer puts a "-- [N]" index comment after every array
+// element, so the ["ropes"] table looks like:  "return {...}", -- [1]
+//                                              "return {...}", -- [2]
+// Without eating those, extractRopes would stop after the very first rope and
+// silently drop the rest of every multi-rope scan file.
+static void skipTrivia(const std::string& text, size_t& i) {
+    for (;;) {
+        skipWhitespaceAndCommas(text, i);
+        if (i + 1 < text.size() && text[i] == '-' && text[i + 1] == '-') {
+            size_t nl = text.find('\n', i);
+            i = (nl == std::string::npos) ? text.size() : nl + 1;
+            continue;
+        }
+        break;
+    }
+}
+
 static void skipWhitespace(const std::string& text, size_t& i) {
     while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) {
         ++i;
@@ -209,9 +252,11 @@ static std::vector<std::vector<std::string>> parseRopeRecords(const std::string&
 // Faction IDs used in the output. Auc-ScanData.lua nests each faction's
 // data under a ["Horde"] or ["Alliance"] key (see AucScanData.scans.
 // <Realm>.<Faction> in the file), which appears above that faction's
-// ["ropes"] block. These constants are the IDs written to the output file.
-static constexpr int FACTION_ID_HORDE    = 2;
-static constexpr int FACTION_ID_ALLIANCE = 6;
+// ["ropes"] block. These constants are the IDs written to the output file
+// and MUST match AzerothCore's AuctionHouseId enum (Alliance = 2, Horde = 6),
+// since the module indexes its per-faction tables straight by this value.
+static constexpr int FACTION_ID_ALLIANCE = 2;
+static constexpr int FACTION_ID_HORDE    = 6;
 static constexpr int FACTION_ID_UNKNOWN  = 0;
 
 // Looks backward from a ["ropes"] block's position to find whichever of
@@ -252,7 +297,7 @@ static std::vector<RopeBlock> extractRopes(const std::string& fileText) {
 
         size_t i = bracePos + 1;
         while (true) {
-            skipWhitespaceAndCommas(fileText, i);
+            skipTrivia(fileText, i);
             if (i >= fileText.size() || fileText[i] == '}') { ++i; break; }
             if (fileText[i] != '"') break; // malformed, stop this block
             ropes.push_back({readLuaString(fileText, i), factionId});
@@ -393,8 +438,14 @@ struct ItemEnchantKeyHash {
         return h;
     }
 };
-using PriceBuckets =
+// Generic "one bucket per item/enchant, holding a list of raw numeric
+// samples" map -- used for both the price tally and the stack-count
+// tally below, since the statistics (computeStats) work identically on
+// either kind of number.
+using NumericBuckets =
     std::unordered_map<ItemEnchantKey, std::vector<double>, ItemEnchantKeyHash>;
+using PriceBuckets = NumericBuckets; // alias for readability at call sites
+using StackBuckets = NumericBuckets;
 
 // Guards stderr progress/warning output so lines from different worker
 // threads don't get interleaved mid-line.
@@ -411,15 +462,16 @@ struct SkipCounts {
 };
 
 // Reads one Auc-ScanData.lua file, decodes its ropes, and folds every
-// valid record's per-unit buyout price into the given priceBuckets tally
-// (keyed by faction+itemID+enchant, faction detected from the ["Horde"]/
-// ["Alliance"] key found above each ropes block). priceBuckets is owned
-// by whichever single thread calls this -- accumulateFile itself does no
-// locking on it, only on the stderr log lines. Returns false if the file
-// couldn't be read or had no ropes data at all (caller just skips it and
-// moves on).
+// valid record's per-unit buyout price (and raw stack COUNT) into the
+// given priceBuckets/stackBuckets tallies (keyed by faction+itemID+
+// enchant, faction detected from the ["Horde"]/["Alliance"] key found
+// above each ropes block). Both maps are owned by whichever single
+// thread calls this -- accumulateFile itself does no locking on them,
+// only on the stderr log lines. Returns false if the file couldn't be
+// read or had no ropes data at all (caller just skips it and moves on).
 static bool accumulateFile(const std::string& path,
                             PriceBuckets& priceBuckets,
+                            StackBuckets& stackBuckets,
                             size_t& recordCount,
                             SkipCounts& skips,
                             size_t& unknownFactionCount) {
@@ -480,7 +532,13 @@ static bool accumulateFile(const std::string& path,
             double chosen = buyout / static_cast<double>(count);
 
             if (block.factionId == FACTION_ID_UNKNOWN) ++unknownFactionCount;
-            priceBuckets[{block.factionId, itemId, enchant}].push_back(chosen);
+            ItemEnchantKey key{block.factionId, itemId, enchant};
+            priceBuckets[key].push_back(chosen);
+            // Stack-count tally uses the SAME set of records as the price
+            // tally (i.e. only records that actually contributed a price),
+            // so both distributions share an identical sampleCount and
+            // stay directly comparable row to row.
+            stackBuckets[key].push_back(static_cast<double>(count));
             ++recordCount;
         }
     }
@@ -492,7 +550,8 @@ static bool accumulateFile(const std::string& path,
 // list -- kept entirely private to the thread until the main thread
 // merges all of these together after every worker has finished.
 struct WorkerResult {
-    PriceBuckets buckets;
+    PriceBuckets priceBuckets;
+    StackBuckets stackBuckets;
     size_t recordCount = 0;
     SkipCounts skips;
     size_t unknownFactionCount = 0;
@@ -507,8 +566,9 @@ static void workerThreadMain(const std::vector<std::string>& paths,
             std::lock_guard<std::mutex> lock(g_logMutex);
             std::cerr << "Scanning " << path << "...\n";
         }
-        if (accumulateFile(path, result.buckets, result.recordCount,
-                            result.skips, result.unknownFactionCount)) {
+        if (accumulateFile(path, result.priceBuckets, result.stackBuckets,
+                            result.recordCount, result.skips,
+                            result.unknownFactionCount)) {
             ++result.filesProcessed;
         } else {
             ++result.filesSkipped;
@@ -517,10 +577,11 @@ static void workerThreadMain(const std::vector<std::string>& paths,
 }
 
 // Folds one worker's private tally into the combined tally. Cheap: for a
-// key the combined map hasn't seen yet, the whole price vector is moved
+// key the combined map hasn't seen yet, the whole sample vector is moved
 // in; for a key both workers happened to hit, the smaller vector's
-// entries are appended onto the combined one.
-static void mergeWorkerResult(PriceBuckets& combined, PriceBuckets&& worker) {
+// entries are appended onto the combined one. Generic over NumericBuckets
+// so it serves both the price tally and the stack-count tally.
+static void mergeNumericBuckets(NumericBuckets& combined, NumericBuckets&& worker) {
     for (auto& kv : worker) {
         auto it = combined.find(kv.first);
         if (it == combined.end()) {
@@ -589,12 +650,14 @@ int main() {
     // Merge every worker's private tally into one combined tally, and
     // sum up their counters.
     PriceBuckets priceBuckets;
+    StackBuckets stackBuckets;
     size_t recordCount = 0, unknownFactionCount = 0;
     size_t filesProcessed = 0, filesSkipped = 0;
     SkipCounts skips;
 
     for (auto& result : results) {
-        mergeWorkerResult(priceBuckets, std::move(result.buckets));
+        mergeNumericBuckets(priceBuckets, std::move(result.priceBuckets));
+        mergeNumericBuckets(stackBuckets, std::move(result.stackBuckets));
         recordCount         += result.recordCount;
         skips.malformed      += result.skips.malformed;
         skips.noItemId        += result.skips.noItemId;
@@ -621,6 +684,10 @@ int main() {
     int32_t  maxEnchant      = 0;
     size_t   maxSampleCount  = 0;
 
+    // How many rows had their stack-stat fields omitted (see the
+    // compression comment inside the loop below).
+    size_t compressedRowCount = 0;
+
     for (auto& bucket : priceBuckets) {
         int32_t  factionId = bucket.first.factionId;
         uint32_t itemId    = bucket.first.itemId;
@@ -638,8 +705,8 @@ int main() {
 
         // Field order: identity fields, then sampleCount (so a consumer
         // can weigh confidence before reading anything else), then the
-        // original raw stats (unchanged order/meaning from before), then
-        // the new quartile range, then the outlier-adjusted stats.
+        // raw price stats, the quartile range, and the outlier-adjusted
+        // price stats -- 16 fields total, always present.
         std::ostringstream line;
         line << factionId << ':' << itemId << ':' << enchant << ':'
              << s.sampleCount << ':'
@@ -648,6 +715,43 @@ int main() {
              << s.q1 << ':' << s.q3 << ':'
              << s.adjLow << ':' << s.adjHigh << ':' << s.adjMean << ':'
              << s.adjMedian << ':' << s.adjMode;
+
+        // Compression: enchant/suffix != 0 means the item is equippable
+        // gear (only equippable items can roll a random-property suffix
+        // in WoW), and equippable items always have a max stack size of
+        // 1 -- confirmed against real data, 0 exceptions. That makes the
+        // 12 stack-stat fields entirely predictable (every one of them
+        // would read exactly "1") for these rows, so they're omitted
+        // rather than written out. A row's field count (16 vs 28) is
+        // therefore itself the signal: 16 fields means "stack size is
+        // always 1, not written"; 28 fields means "see the trailing 12
+        // stack fields for the real distribution." enchant == 0 doesn't
+        // guarantee the item IS stackable (plenty of gear also has no
+        // suffix), so those rows always keep the full stack stats since
+        // we can't safely predict them.
+        if (enchant != 0) {
+            ++compressedRowCount;
+        } else {
+            // Stack-count stats for this same bucket. stackBuckets is
+            // filled in lockstep with priceBuckets (same key, same
+            // record set), so this lookup should always succeed -- the
+            // fallback only matters as defensive coding, never in
+            // practice.
+            static const std::vector<double> emptyStackFallback = {0.0};
+            auto stackIt = stackBuckets.find(bucket.first);
+            std::vector<double> stackCountsCopy = (stackIt != stackBuckets.end())
+                ? stackIt->second
+                : emptyStackFallback;
+            Stats st = computeStats(stackCountsCopy);
+
+            line << ':'
+                 << st.low << ':' << st.high << ':' << st.mean << ':'
+                 << st.median << ':' << st.mode << ':'
+                 << st.q1 << ':' << st.q3 << ':'
+                 << st.adjLow << ':' << st.adjHigh << ':' << st.adjMean << ':'
+                 << st.adjMedian << ':' << st.adjMode;
+        }
+
         lines.push_back(line.str());
     }
 
@@ -678,6 +782,8 @@ int main() {
               << ":         " << skips.noBuyout << "\n"
               << "  Unique items out:  " << lines.size()
               << " (rows in auctionsim.dat, deduped by faction+item+enchant)\n"
+              << "  Rows compressed:   " << compressedRowCount << " / " << lines.size()
+              << " (enchant != 0, stack stats omitted as always-1)\n"
               << "  Most price data:   faction " << maxFactionId
               << ", item " << maxItemId << ", enchant " << maxEnchant
               << " (" << maxSampleCount << " listings)\n"

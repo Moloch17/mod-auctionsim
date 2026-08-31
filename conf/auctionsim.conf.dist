@@ -8,7 +8,7 @@ AuctionSim.BotAccountID = 0
 AuctionSim.BotCharacterID = 0
 
 # Do a scan on server startup
-AuctionSim.StartupScan = 1
+AuctionSim.StartupScan = 0
 
 # Maximum required level for items the bot will list. Items requiring a higher
 # level to use are skipped before being created. 0 disables this filter.
@@ -33,9 +33,9 @@ AuctionSim.TradeGoodsPercent    = GREY: 0000, WHITE: 0500, GREEN: 0500, BLUE: 05
 AuctionSim.GenericPercent       = GREY: 0000, WHITE: 0300, GREEN: 0000, BLUE: 0000, PURPLE: 0000, ORANGE: 0000, YELLOW: 0000
 AuctionSim.RecipePercent        = GREY: 0000, WHITE: 0010, GREEN: 0010, BLUE: 0010, PURPLE: 0010, ORANGE: 0000, YELLOW: 0000
 AuctionSim.MoneyPercent         = GREY: 0000, WHITE: 0000, GREEN: 0000, BLUE: 0000, PURPLE: 0000, ORANGE: 0000, YELLOW: 0000
-AuctionSim.QuiverPercent        = GREY: 0000, WHITE: 0000, GREEN: 0000, BLUE: 0000, PURPLE: 0000, ORANGE: 0000, YELLOW: 0000
+AuctionSim.QuiverPercent        = GREY: 0000, WHITE: 0100, GREEN: 0100, BLUE: 0100, PURPLE: 0100, ORANGE: 0000, YELLOW: 0000
 AuctionSim.QuestPercent         = GREY: 0000, WHITE: 0050, GREEN: 0050, BLUE: 0030, PURPLE: 0010, ORANGE: 0000, YELLOW: 0000
 AuctionSim.KeyPercent           = GREY: 0000, WHITE: 0020, GREEN: 0000, BLUE: 0000, PURPLE: 0000, ORANGE: 0000, YELLOW: 0000
 AuctionSim.PermanentPercent     = GREY: 0000, WHITE: 0000, GREEN: 0000, BLUE: 0000, PURPLE: 0000, ORANGE: 0000, YELLOW: 0000
-AuctionSim.MiscPercent          = GREY: 0000, WHITE: 0030, GREEN: 0030, BLUE: 0010, PURPLE: 0010, ORANGE: 0000, YELLOW: 0000
-AuctionSim.GlyphPercent         = GREY: 0000, WHITE: 0030, GREEN: 0000, BLUE: 0000, PURPLE: 0000, ORANGE: 0000, YELLOW: 0000
+AuctionSim.MiscPercent          = GREY: 0000, WHITE: 0030, GREEN: 0030, BLUE: 0030, PURPLE: 0030, ORANGE: 0000, YELLOW: 0000
+AuctionSim.GlyphPercent         = GREY: 0000, WHITE: 0100, GREEN: 0000, BLUE: 0000, PURPLE: 0000, ORANGE: 0000, YELLOW: 0000
