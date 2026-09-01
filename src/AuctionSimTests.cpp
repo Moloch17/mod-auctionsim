@@ -461,6 +461,44 @@ namespace
         return Pass("IsWithinLevelCap boundary");
     }
 
+    TestResult TestIsWithinVendorValueBoundary()
+    {
+        if (!AuctionPricing::IsWithinVendorValue(1'000'000, 0))
+        {
+            return Fail("IsWithinVendorValue boundary", "sellPrice 0 (no vendor value) rejected a buy");
+        }
+        if (!AuctionPricing::IsWithinVendorValue(500, 500))
+        {
+            return Fail("IsWithinVendorValue boundary", "price equal to the vendor sell price was rejected");
+        }
+        if (!AuctionPricing::IsWithinVendorValue(499, 500))
+        {
+            return Fail("IsWithinVendorValue boundary", "price below the vendor sell price was rejected");
+        }
+        if (AuctionPricing::IsWithinVendorValue(501, 500))
+        {
+            return Fail("IsWithinVendorValue boundary", "price above the vendor sell price was accepted");
+        }
+        return Pass("IsWithinVendorValue boundary");
+    }
+
+    TestResult TestIsBuyableQuality()
+    {
+        if (AuctionPricing::IsBuyableQuality(0))
+        {
+            return Fail("IsBuyableQuality", "poor/grey quality (0) was reported buyable");
+        }
+        for (uint32 quality = 1; quality < MAX_ITEM_QUALITY; quality++)
+        {
+            if (!AuctionPricing::IsBuyableQuality(quality))
+            {
+                return Fail(
+                    "IsBuyableQuality", Acore::StringFormat("quality {} was reported not buyable", quality));
+            }
+        }
+        return Pass("IsBuyableQuality");
+    }
+
     // Heap-allocates a bare AuctionEntry for queue-mechanics tests that never reach
     // BuyItem (so it's never freed via AuctionHouseObject::RemoveAuction). Callers
     // that don't process it must delete it themselves.
@@ -616,6 +654,8 @@ namespace AuctionSimTests
             TestListingCountMath(),
             TestWeightedPick(),
             TestIsWithinLevelCapBoundary(),
+            TestIsWithinVendorValueBoundary(),
+            TestIsBuyableQuality(),
             TestBuyQueuePopulatesOnQualifyingPrice(bot),
             TestBuyQueueDedupesRescan(bot),
             TestBuyQueueNotYetDue(bot),

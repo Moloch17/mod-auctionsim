@@ -250,6 +250,16 @@ void AuctionSim::ScanAuctions(AuctionHouseId _AuctionHouseId)
         }
 
         uint32 pricePerItem = auction->buyout / auction->itemCount;
+
+        // Never buy grey items, and never pay more per unit than a vendor would give
+        // the player for the item -- both are gold-cheese vectors. Grey auctions are
+        // still counted above so the listing side is unaffected.
+        if (!AuctionPricing::IsBuyableQuality(proto->Quality) ||
+            !AuctionPricing::IsWithinVendorValue(pricePerItem, proto->SellPrice))
+        {
+            continue;
+        }
+
         buyingService->ConsiderForPurchase(
             auction, pricePerItem, scannedItem->GetMarketPrice(), scannedItem->GetBuyCeiling());
     }
