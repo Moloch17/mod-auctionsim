@@ -3,6 +3,8 @@
 #include <memory>
 #include <string>
 #include <system_error>
+#include <unordered_map>
+#include <vector>
 #include "ASConfig.h"
 #include "AuctionHouseMgr.h"
 #include "AuctionHouseSearcher.h"
@@ -18,9 +20,43 @@
 
 namespace
 {
+    // Collects every bot-owned auction on `houseId` that `shouldRemove` accepts, then
+    // deletes them in a second pass -- so the live house map is never mutated while it
+    // is being iterated, and it is never copied. Returns the number removed.
+    template <typename Predicate>
+    uint32 RemoveBotAuctionsIf(
+        AuctionHouseId houseId,
+        ObjectGuid botGuid,
+        SQLTransaction<CharacterDatabaseConnection>& trans,
+        Predicate shouldRemove)
+    {
+        AuctionHouseObject* house = sAuctionMgr->GetAuctionsMapByHouseId(houseId);
+
+        std::vector<AuctionEntry*> toRemove;
+        for (auto const& entry : house->GetAuctions())
+        {
+            AuctionEntry* auction = entry.second;
+            if (auction->owner == botGuid && shouldRemove(auction))
+            {
+                toRemove.push_back(auction);
+            }
+        }
+
+        for (AuctionEntry* auction : toRemove)
+        {
+            auction->DeleteFromDB(trans);
+            sAuctionMgr->RemoveAItem(auction->item_guid, true, &trans);
+            house->RemoveAuction(auction);
+        }
+        return static_cast<uint32>(toRemove.size());
+    }
+
     bool IsBotCharacter(uint32 lowGuid)
     {
-        uint32 botLowGuid = sConfigMgr->GetOption<uint32>("AuctionSim.BotCharacterID", 0);
+        // Read the running bot's character id rather than re-parsing config: this
+        // hook fires for every mail delivered server-wide.
+        AuctionSim* sim = AuctionSim::instance();
+        uint32 botLowGuid = sim ? sim->GetBotCharacterLowGuid() : 0;
         return botLowGuid != 0 && lowGuid == botLowGuid;
     }
 }
@@ -174,12 +210,17 @@ void AuctionSim::OnUpdate(uint32 diff)
 
 void AuctionSim::ScanAuctions(AuctionHouseId _AuctionHouseId)
 {
-    auto map = sAuctionMgr->GetAuctionsMapByHouseId(_AuctionHouseId)->GetAuctions();
+    // const& -- GetAuctions() returns the live map by reference; a by-value `auto`
+    // would deep-copy every auction node on the house each scan.
+    auto const& auctions = sAuctionMgr->GetAuctionsMapByHouseId(_AuctionHouseId)->GetAuctions();
     int auctionTable[MAX_ITEM_CLASS][MAX_ITEM_QUALITY] = {};
+    std::unordered_map<uint32, int> itemAuctionCount;
+
+    ObjectGuid const botGuid = bot->GetPlayer()->GetGUID();
 
     buyingService->RollTolerance();
 
-    for (auto it = map.begin(); it != map.end(); ++it)
+    for (auto it = auctions.begin(); it != auctions.end(); ++it)
     {
         AuctionEntry* auction = it->second;
         ItemTemplate const* proto = sObjectMgr->GetItemTemplate(auction->item_template);
@@ -194,8 +235,9 @@ void AuctionSim::ScanAuctions(AuctionHouseId _AuctionHouseId)
         }
 
         auctionTable[proto->Class][proto->Quality]++;
+        itemAuctionCount[auction->item_template]++;
 
-        if (auction->owner == bot->GetPlayer().get()->GetGUID())
+        if (auction->owner == botGuid)
         {
             continue;
         }
@@ -214,7 +256,7 @@ void AuctionSim::ScanAuctions(AuctionHouseId _AuctionHouseId)
 
     buyingService->SortQueue();
 
-    listingService->ListNewAuctions(_AuctionHouseId, auctionTable);
+    listingService->ListNewAuctions(_AuctionHouseId, auctionTable, itemAuctionCount);
 }
 
 std::vector<AuctionSimTests::TestResult> AuctionSim::RunTests()
@@ -237,6 +279,19 @@ std::vector<AuctionSimTests::TestResult> AuctionSim::RunTests()
     return results;
 }
 
+AuctionSim::BuyQueueStatus AuctionSim::GetBuyQueueStatus(time_t now) const
+{
+    auto const& queue = buyingService->GetQueue();
+    if (queue.empty())
+    {
+        return {};
+    }
+
+    // SortQueue keeps the soonest-due purchase at the back and the furthest-due at
+    // the front.
+    return {queue.size(), queue.back().buyTime - now, queue.front().buyTime - now};
+}
+
 uint32 AuctionSim::CleanOverCapAuctions()
 {
     if (!bot || !bot->GetPlayer() || !config)
@@ -244,40 +299,23 @@ uint32 AuctionSim::CleanOverCapAuctions()
         return 0;
     }
 
-    ObjectGuid botPlayerGUID = bot->GetPlayer().get()->GetGUID();
+    ObjectGuid const botPlayerGUID = bot->GetPlayer()->GetGUID();
     auto trans = CharacterDatabase.BeginTransaction();
     uint32 removedCount = 0;
 
+    auto isOverCap = [this](AuctionEntry const* auction) {
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(auction->item_template);
+        if (!proto)
+        {
+            return false;  // can't judge it -- leave it alone
+        }
+        return !AuctionPricing::IsWithinLevelCap(
+            proto->RequiredLevel, proto->ItemLevel, config->maxRequiredLevel, config->maxItemLevel);
+    };
+
     for (AuctionHouseId houseId : {AuctionHouseId::Alliance, AuctionHouseId::Horde})
     {
-        auto auctions = sAuctionMgr->GetAuctionsMapByHouseId(houseId)->GetAuctions();
-        for (auto it = auctions.begin(); it != auctions.end();)
-        {
-            AuctionEntry* auction = it->second;
-            if (auction->owner != botPlayerGUID)
-            {
-                ++it;
-                continue;
-            }
-
-            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(auction->item_template);
-            bool withinCap = !proto || AuctionPricing::IsWithinLevelCap(
-                                            proto->RequiredLevel,
-                                            proto->ItemLevel,
-                                            config->maxRequiredLevel,
-                                            config->maxItemLevel);
-            if (withinCap)
-            {
-                ++it;
-                continue;
-            }
-
-            auction->DeleteFromDB(trans);
-            sAuctionMgr->RemoveAItem(auction->item_guid, true, &trans);
-            sAuctionMgr->GetAuctionsMapByHouseId(houseId)->RemoveAuction(auction);
-            it = auctions.erase(it);
-            removedCount++;
-        }
+        removedCount += RemoveBotAuctionsIf(houseId, botPlayerGUID, trans, isOverCap);
     }
 
     CharacterDatabase.CommitTransaction(trans);
@@ -292,39 +330,12 @@ void AuctionSim::DeleteAuctions()
         return;
     }
 
-    ObjectGuid botPlayerGUID = bot->GetPlayer().get()->GetGUID();
+    ObjectGuid const botPlayerGUID = bot->GetPlayer()->GetGUID();
     auto trans = CharacterDatabase.BeginTransaction();
 
-    auto allianceAuctions = sAuctionMgr->GetAuctionsMapByHouseId(AuctionHouseId::Alliance)->GetAuctions();
-    for (auto it = allianceAuctions.begin(); it != allianceAuctions.end();)
+    for (AuctionHouseId houseId : {AuctionHouseId::Alliance, AuctionHouseId::Horde})
     {
-        if (it->second->owner == botPlayerGUID)
-        {
-            it->second->DeleteFromDB(trans);
-            sAuctionMgr->RemoveAItem(it->second->item_guid, true, &trans);
-            sAuctionMgr->GetAuctionsMapByHouseId(AuctionHouseId::Alliance)->RemoveAuction(it->second);
-            it = allianceAuctions.erase(it);
-        }
-        else
-        {
-            ++it;
-        }
-    }
-
-    auto hordeAuctions = sAuctionMgr->GetAuctionsMapByHouseId(AuctionHouseId::Horde)->GetAuctions();
-    for (auto it = hordeAuctions.begin(); it != hordeAuctions.end();)
-    {
-        if (it->second->owner == botPlayerGUID)
-        {
-            it->second->DeleteFromDB(trans);
-            sAuctionMgr->RemoveAItem(it->second->item_guid, true, &trans);
-            sAuctionMgr->GetAuctionsMapByHouseId(AuctionHouseId::Horde)->RemoveAuction(it->second);
-            it = hordeAuctions.erase(it);
-        }
-        else
-        {
-            ++it;
-        }
+        RemoveBotAuctionsIf(houseId, botPlayerGUID, trans, [](AuctionEntry const*) { return true; });
     }
 
     CharacterDatabase.CommitTransaction(trans);

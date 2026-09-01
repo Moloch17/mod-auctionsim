@@ -80,81 +80,136 @@ namespace
         }
         return eqPos;
     }
+
+    // Rewrites "AuctionSim.<key> = <old>" -> "... = <value>" in `line` in place.
+    // Returns true if `line` was that key's line (and was rewritten).
+    bool RewriteScalarLine(std::string& line, std::string const& fullKey, std::string const& value)
+    {
+        size_t eqPos = FindKeyEquals(line, fullKey);
+        if (eqPos == std::string::npos)
+        {
+            return false;
+        }
+        line = line.substr(0, eqPos + 1) + " " + value;
+        return true;
+    }
+
+    // Rewrites the "<qualityLabel>: <num>" cell inside the "AuctionSim.<fullKey> = ..."
+    // line in place. Returns true if `line` was that key's line; on that line, if the
+    // label or its number can't be located it logs and sets `outCellOk` false but
+    // still returns true (the line was matched, the cell just wasn't).
+    bool RewriteMaskLine(
+        std::string& line,
+        std::string const& fullKey,
+        std::string const& qualityLabel,
+        std::string const& value,
+        bool& outCellOk)
+    {
+        size_t eqPos = FindKeyEquals(line, fullKey);
+        if (eqPos == std::string::npos)
+        {
+            return false;
+        }
+
+        std::string labelPrefix = qualityLabel + ": ";
+        size_t labelPos = line.find(labelPrefix, eqPos);
+        if (labelPos == std::string::npos)
+        {
+            LOG_ERROR(
+                "module", "AuctionSim: config writer couldn't find '{}' on the {} line", qualityLabel, fullKey);
+            outCellOk = false;
+            return true;
+        }
+
+        size_t valueStart = labelPos + labelPrefix.size();
+        size_t valueEnd = valueStart;
+        while (valueEnd < line.size() &&
+               (std::isdigit(static_cast<unsigned char>(line[valueEnd])) || line[valueEnd] == '.'))
+        {
+            valueEnd++;
+        }
+        if (valueEnd == valueStart)
+        {
+            LOG_ERROR(
+                "module", "AuctionSim: config writer found no number after '{}' on the {} line", labelPrefix,
+                fullKey);
+            outCellOk = false;
+            return true;
+        }
+
+        line = line.substr(0, valueStart) + value + line.substr(valueEnd);
+        return true;
+    }
 }
 
 namespace ASConfigWriter
 {
-    bool SetScalarValue(std::string const& filepath, std::string const& key, std::string const& value)
+    bool SetMany(std::string const& filepath, std::vector<Edit> const& edits)
     {
+        if (edits.empty())
+        {
+            return true;
+        }
+
         std::vector<std::string> lines = ReadLines(filepath);
         if (lines.empty())
         {
             return false;
         }
 
-        std::string fullKey = "AuctionSim." + key;
-        for (std::string& line : lines)
+        bool allOk = true;
+        for (Edit const& edit : edits)
         {
-            size_t eqPos = FindKeyEquals(line, fullKey);
-            if (eqPos == std::string::npos)
+            std::string fullKey = "AuctionSim." + edit.key;
+            bool applied = false;
+            bool lineMatched = false;
+
+            for (std::string& line : lines)
             {
-                continue;
+                if (edit.qualityLabel.empty())
+                {
+                    if (RewriteScalarLine(line, fullKey, edit.value))
+                    {
+                        applied = true;
+                        lineMatched = true;
+                        break;
+                    }
+                }
+                else
+                {
+                    bool cellOk = true;
+                    if (RewriteMaskLine(line, fullKey, edit.qualityLabel, edit.value, cellOk))
+                    {
+                        applied = cellOk;
+                        lineMatched = true;
+                        break;
+                    }
+                }
             }
 
-            line = line.substr(0, eqPos + 1) + " " + value;
-            return WriteLinesAtomic(filepath, lines);
+            if (!applied)
+            {
+                // A matched-line-but-bad-cell mask edit already logged its specifics.
+                if (!lineMatched)
+                {
+                    LOG_ERROR("module", "AuctionSim: config writer couldn't find '{}' in {}", fullKey, filepath);
+                }
+                allOk = false;
+            }
         }
 
-        LOG_ERROR("module", "AuctionSim: config writer couldn't find '{}' in {}", fullKey, filepath);
-        return false;
+        return WriteLinesAtomic(filepath, lines) && allOk;
+    }
+
+    bool SetScalarValue(std::string const& filepath, std::string const& key, std::string const& value)
+    {
+        return SetMany(filepath, {{key, "", value}});
     }
 
     bool SetMaskValue(
         std::string const& filepath, std::string const& percentConfigKey, std::string const& qualityLabel,
-        uint32 value)
+        float value)
     {
-        std::vector<std::string> lines = ReadLines(filepath);
-        if (lines.empty())
-        {
-            return false;
-        }
-
-        std::string fullKey = "AuctionSim." + percentConfigKey;
-        for (std::string& line : lines)
-        {
-            size_t eqPos = FindKeyEquals(line, fullKey);
-            if (eqPos == std::string::npos)
-            {
-                continue;
-            }
-
-            std::string labelPrefix = qualityLabel + ": ";
-            size_t labelPos = line.find(labelPrefix, eqPos);
-            if (labelPos == std::string::npos)
-            {
-                LOG_ERROR(
-                    "module", "AuctionSim: config writer couldn't find '{}' on the {} line", qualityLabel, fullKey);
-                return false;
-            }
-
-            size_t valueStart = labelPos + labelPrefix.size();
-            size_t valueEnd = valueStart;
-            while (valueEnd < line.size() && std::isdigit(static_cast<unsigned char>(line[valueEnd])))
-            {
-                valueEnd++;
-            }
-            if (valueEnd == valueStart)
-            {
-                LOG_ERROR("module", "AuctionSim: config writer found no digits after '{}' on the {} line",
-                    labelPrefix, fullKey);
-                return false;
-            }
-
-            line = line.substr(0, valueStart) + Acore::StringFormat("{:04}", value) + line.substr(valueEnd);
-            return WriteLinesAtomic(filepath, lines);
-        }
-
-        LOG_ERROR("module", "AuctionSim: config writer couldn't find '{}' in {}", fullKey, filepath);
-        return false;
+        return SetMany(filepath, {{percentConfigKey, qualityLabel, Acore::StringFormat("{:g}", value)}});
     }
 }

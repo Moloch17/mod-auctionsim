@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <ctime>
+#include <vector>
 #include "Define.h"
 
 // Pure pricing/selection math for AH listing and buying decisions. No DB or
@@ -10,8 +11,22 @@ namespace AuctionPricing
     // Fixed scan cadence -- previously user-configurable via AuctionSim.UpdateInterval.
     constexpr uint32 kScanIntervalSeconds = 3600;
 
-    int CalculateTargetListingCount(float mask, size_t poolSize);
+    // How full to make a (class, quality) category this scan: a random point in
+    // the observed [q1, median] band. Kept toward the lower end on purpose --
+    // successive scans are noisy, and overshoot lingers on the AH for hours.
+    // Bounds are order-tolerant.
+    uint32 RollCategoryTarget(uint32 q1, uint32 median);
+
     int CalculateItemsToList(int targetCount, int existingCount);
+
+    // Picks an index into `weights` with probability proportional to each entry.
+    // Returns weights.size() when every weight is zero (i.e. "nothing to pick").
+    size_t WeightedPick(std::vector<uint32> const& weights);
+
+    // As above, but takes a precomputed sum of `weights`. The listing fill loop
+    // keeps this total running as it zeroes entries, so it never re-sums the whole
+    // pool per pick. `total` must equal the current sum of `weights`.
+    size_t WeightedPick(std::vector<uint32> const& weights, uint32 total);
 
     // Rolls the stack size for a new listing from the item's observed stack-size
     // distribution: most listings use `typical` (the size the market conventionally

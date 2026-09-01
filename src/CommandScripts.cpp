@@ -1,4 +1,5 @@
 #include <chrono>
+#include <utility>
 #include "AuctionSim.h"
 #include "Chat.h"
 #include "ChatCommand.h"
@@ -7,6 +8,31 @@
 #include "ScriptMgr.h"
 
 using namespace Acore::ChatCommands;
+
+namespace
+{
+    // Shared "is the module usable?" gate for every subcommand. Replies to the GM
+    // and returns false when it isn't.
+    bool RequireEnabled(ChatHandler* handler)
+    {
+        if (AuctionSim::instance() && AuctionSim::instance()->isEnabled)
+        {
+            return true;
+        }
+        handler->SendSysMessage("AuctionSim module is disabled.");
+        return false;
+    }
+
+    // Runs `fn` and returns how long it took, in whole milliseconds.
+    template <typename Fn>
+    long long TimedMs(Fn&& fn)
+    {
+        auto start = std::chrono::steady_clock::now();
+        std::forward<Fn>(fn)();
+        auto end = std::chrono::steady_clock::now();
+        return std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    }
+}
 
 class AuctionSimCommandScript : public CommandScript
 {
@@ -30,23 +56,18 @@ public:
 
     static bool HandleScanAuctionsCommand(ChatHandler* handler)
     {
-        if (!AuctionSim::instance()->isEnabled)
+        if (!RequireEnabled(handler))
         {
-            handler->SendSysMessage("AuctionSim module is disabled.");
             return true;
         }
 
-        auto start = std::chrono::high_resolution_clock::now();
-
         size_t queueSizeBefore = AuctionSim::instance()->GetBuyQueue().size();
-
-        AuctionSim::instance()->ScanAuctions(AuctionHouseId::Alliance);
-        AuctionSim::instance()->ScanAuctions(AuctionHouseId::Horde);
-
+        long long elapsed = TimedMs([] {
+            AuctionSim::instance()->ScanAuctions(AuctionHouseId::Alliance);
+            AuctionSim::instance()->ScanAuctions(AuctionHouseId::Horde);
+        });
         size_t queueSizeAfter = AuctionSim::instance()->GetBuyQueue().size();
 
-        auto end = std::chrono::high_resolution_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
         std::string message = fmt::format(
             "Auction scan completed in {} ms. Added {} item(s) to buy queue ({} total).",
             elapsed,
@@ -59,27 +80,20 @@ public:
 
     static bool HandleDeleteAuctionsCommand(ChatHandler* handler)
     {
-        if (!AuctionSim::instance()->isEnabled)
+        if (!RequireEnabled(handler))
         {
-            handler->SendSysMessage("AuctionSim module is disabled.");
             return true;
         }
 
-        auto start = std::chrono::high_resolution_clock::now();
-
-        AuctionSim::instance()->DeleteAuctions();
-
-        auto end = std::chrono::high_resolution_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+        long long elapsed = TimedMs([] { AuctionSim::instance()->DeleteAuctions(); });
         handler->SendSysMessage(fmt::format("Auction delete completed in {} ms", elapsed));
         return true;
     }
 
     static bool HandleTestCommand(ChatHandler* handler)
     {
-        if (!AuctionSim::instance()->isEnabled)
+        if (!RequireEnabled(handler))
         {
-            handler->SendSysMessage("AuctionSim module is disabled.");
             return true;
         }
 
@@ -109,18 +123,13 @@ public:
 
     static bool HandleCleanOverCapCommand(ChatHandler* handler)
     {
-        if (!AuctionSim::instance()->isEnabled)
+        if (!RequireEnabled(handler))
         {
-            handler->SendSysMessage("AuctionSim module is disabled.");
             return true;
         }
 
-        auto start = std::chrono::high_resolution_clock::now();
-
-        uint32 removedCount = AuctionSim::instance()->CleanOverCapAuctions();
-
-        auto end = std::chrono::high_resolution_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+        uint32 removedCount = 0;
+        long long elapsed = TimedMs([&] { removedCount = AuctionSim::instance()->CleanOverCapAuctions(); });
         handler->SendSysMessage(
             fmt::format("Removed {} over-cap auction(s) in {} ms", removedCount, elapsed));
         return true;
@@ -128,33 +137,21 @@ public:
 
     static bool HandleShowQueueCommand(ChatHandler* handler)
     {
-        if (!AuctionSim::instance()->isEnabled)
+        if (!RequireEnabled(handler))
         {
-            handler->SendSysMessage("AuctionSim module is disabled.");
             return true;
         }
 
-        auto const& queue = AuctionSim::instance()->GetBuyQueue();
+        AuctionSim::BuyQueueStatus status =
+            AuctionSim::instance()->GetBuyQueueStatus(GameTime::GetGameTime().count());
 
-        if (queue.empty())
-        {
-            std::string message = "AuctionSim buy queue is empty.";
-            LOG_INFO("module", "{}", message);
-            handler->SendSysMessage(message);
-            return true;
-        }
-
-        // Sorted descending by buyTime (see AuctionBuyingService::SortQueue): soonest-due
-        // purchase is at the back, furthest-due is at the front.
-        time_t now = GameTime::GetGameTime().count();
-        time_t nextBuyIn = queue.back().buyTime - now;
-        time_t lastBuyIn = queue.front().buyTime - now;
-
-        std::string message = fmt::format(
-            "AuctionSim buy queue: {} item(s) | next buy in {}s | last buy in {}s",
-            queue.size(),
-            nextBuyIn,
-            lastBuyIn);
+        std::string message = status.size == 0
+            ? std::string("AuctionSim buy queue is empty.")
+            : fmt::format(
+                  "AuctionSim buy queue: {} item(s) | next buy in {}s | last buy in {}s",
+                  status.size,
+                  status.nextBuyInSeconds,
+                  status.lastBuyInSeconds);
         LOG_INFO("module", "{}", message);
         handler->SendSysMessage(message);
         return true;

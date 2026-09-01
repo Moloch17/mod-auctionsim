@@ -1,63 +1,43 @@
 // compile-data.cpp
 //
-// Parses an Auctioneer Auc-ScanData.lua SavedVariables file, decodes the
-// "ropes" field (see explanation below), and emits an output file whose
-// first line is the item count N, followed by N lines each formatted as:
+// Parses Auctioneer Auc-ScanData.lua SavedVariables files, decodes their
+// "ropes" fields (see explanation below), and emits auctionsim.dat.
 //
-//   factionId:itemID:enchantment:sampleCount:
-//     priceLow:priceHigh:priceMean:priceMedian:priceMode:priceQ1:priceQ3:
-//     priceAdjLow:priceAdjHigh:priceAdjMean:priceAdjMedian:priceAdjMode:
-//     stackLow:stackHigh:stackMean:stackMedian:stackMode:stackQ1:stackQ3:
-//     stackAdjLow:stackAdjHigh:stackAdjMean:stackAdjMedian:stackAdjMode
+// LINE 1:  "<itemRowCount> <categoryRowCount>"
 //
-// (colons above are just wrapped for line length -- it's one flat
-// colon-separated line per item/enchant. ROWS ARE VARIABLE LENGTH: 16
-// fields when enchant != 0, 28 fields when enchant == 0. See the
-// "Compression" note below for why.)
+// Then <categoryRowCount> CATEGORY ROWS, one per (faction, item class,
+// quality) that appeared in the scans -- 16 fields:
 //
-// sampleCount is how many individual buyout listings fed that row's
-// stats -- read this before trusting the stats next to it; some items
-// will have thousands of listings behind them, others a small handful,
-// and the two shouldn't be treated with equal confidence. It applies to
-// BOTH the price stats and the stack stats below, since both are
-// computed from the exact same set of records.
+//   faction:itemClass:quality:snapshotCount:
+//     low:high:mean:median:mode:q1:q3:adjLow:adjHigh:adjMean:adjMedian:adjMode
 //
-// The price* fields are the per-unit buyout price stats (RAW = every
-// listing as-is; Q1/Q3 = 25th/75th percentile; Adj* = the same
-// central-tendency stats recomputed after dropping outliers via Tukey's
-// 1.5x-IQR fences). See computeStats() for the full reasoning; short
-// version: IQR-based fences are the standard, distribution-free way to
-// flag outliers and don't assume prices are normally distributed (they
-// aren't -- real AH price data is right-skewed).
+// where the stats are over one sample per scan snapshot = the total number
+// of auctions in that category in that snapshot. This is what the module
+// uses to decide how full each category should be.
 //
-// The stack* fields are the SAME statistical treatment (raw stats,
-// quartiles, outlier-adjusted stats) applied to stack size (COUNT)
-// instead of price. This tells you what stack size the market actually
-// expects for an item -- e.g. stackMode=20 for a common trade good means
-// listings almost always go up in stacks of 20, which matters if you
-// want your own listings to sell at a normal rate rather than sitting
-// unsold because they're an unusual size. Outlier trimming applies here
-// too (a single accidental stack-of-1 listing for an item everyone else
-// sells in 20s shouldn't skew stackMean), even though stack counts are
-// small bounded integers rather than continuous currency -- the same
-// IQR-fence math still works correctly on that kind of distribution, it
-// just tends to produce a very tight adjusted range when (as is common)
-// almost everyone lists in one or two conventional sizes.
+// Then <itemRowCount> ITEM ROWS, one per (faction, itemID, suffix), all a
+// FIXED 41 fields -- no compression:
 //
-// Compression: rows where enchant/suffix != 0 OMIT the trailing 12
-// stack* fields entirely (16 fields written, not 28). This is safe, not
-// approximate: in WoW, only equippable gear can ever roll a random-
-// property suffix, and equippable items always have a max stack size of
-// 1 -- so for these rows every one of the 12 stack fields would read
-// exactly "1", with zero exceptions (verified against real scan data:
-// 1,899/1,899 enchant!=0 rows had all-1 stack stats). enchant == 0 does
-// NOT reliably imply the item is stackable -- plenty of gear has no
-// random suffix either -- so those rows always keep the real stack
-// stats, since we can't safely predict them. A consumer parsing this
-// file should treat a row's field count itself as the signal: 16 fields
-// means "stack size is always 1, not written"; 28 fields means "see the
-// trailing 12 fields for the real stack distribution."
-//// -----------------------------------------------------------------------
+//   faction:itemID:suffix:priceSampleCount:
+//     <12 price stats> : <12 stack-size stats> : <12 listing-count stats> :
+//     listingSnapshotCount
+//
+// Each 12-stat block is: raw low/high/mean/median/mode, then q1/q3, then the
+// 5 outlier-adjusted (Tukey 1.5x-IQR trimmed) central-tendency values. See
+// computeStats(); short version: IQR fences are the standard distribution-
+// free way to drop one-off troll / fat-finger listings, and real AH data is
+// right-skewed so a plain mean is a poor "typical" signal.
+//
+//   price*   per-unit buyout price. priceSampleCount = # buyout listings.
+//   stack*   listing stack size (COUNT). Same record set as price (so its
+//            sampleCount == priceSampleCount). Reads all-1 for equippable
+//            gear; written out anyway to keep every row the same width.
+//   listing* how many auctions of this item exist per snapshot, counting
+//            EVERY auction (buyout or bid-only). Its sample basis is
+//            snapshots, not records, so it carries its own trailing
+//            listingSnapshotCount.
+//
+// -----------------------------------------------------------------------
 // Background: "ropes" is an array of Lua *source code* strings. Each one
 // is a chunk like  return {{...},{...},...}  that Auctioneer feeds through
 // loadstring()/pcall() to reconstitute a table of raw auction records.
@@ -82,8 +62,8 @@
 //   column -- the random-property ID (e.g. "... of the Bear"), not the
 //   permanent-enchant field 26.
 //
-// Build:   g++ -O2 -std=c++17 -pthread -o ah_parser ah_parser.cpp
-// Usage:   ./ah_parser
+// Build:   g++ -O2 -std=c++17 -pthread -o compile-data compile-data.cpp
+// Usage:   ./compile-data
 //          Scans every regular file (skipping subdirectories, symlinks,
 //          etc.) in a "scans" subdirectory next to the executable's
 //          working directory, running a tally of per-unit buyout prices
@@ -368,6 +348,10 @@ static double percentile(const std::vector<double>& sortedPrices, double p) {
 // the Q1/Q3 quartile range, and a second set of central-tendency stats
 // recomputed after trimming outliers via Tukey's 1.5x-IQR fences. See
 // the top-of-file comment for the reasoning behind these choices.
+//
+// emitStats() below writes these in a fixed order that the module parses back
+// field-for-field: keep it in sync with `struct StatBlock` in
+// modules/mod-auctionsim/src/ScannedItem.h.
 struct Stats {
     size_t sampleCount = 0;
 
@@ -439,13 +423,50 @@ struct ItemEnchantKeyHash {
     }
 };
 // Generic "one bucket per item/enchant, holding a list of raw numeric
-// samples" map -- used for both the price tally and the stack-count
-// tally below, since the statistics (computeStats) work identically on
-// either kind of number.
+// samples" map -- used for the price tally, the stack-count tally and the
+// per-item listing-count tally below, since computeStats works identically
+// on any kind of number.
 using NumericBuckets =
     std::unordered_map<ItemEnchantKey, std::vector<double>, ItemEnchantKeyHash>;
 using PriceBuckets = NumericBuckets; // alias for readability at call sites
 using StackBuckets = NumericBuckets;
+using ListingCountBuckets = NumericBuckets;
+
+// Composite key: one bucket per (faction, item class, quality). Holds one
+// sample per scan snapshot = the total number of auctions in that category
+// in that snapshot. Drives the module's per-category listing depth.
+struct CategoryKey {
+    int32_t factionId;
+    int32_t itemClass;
+    int32_t quality;
+    bool operator==(const CategoryKey& o) const {
+        return factionId == o.factionId && itemClass == o.itemClass && quality == o.quality;
+    }
+};
+struct CategoryKeyHash {
+    size_t operator()(const CategoryKey& k) const {
+        size_t h = static_cast<size_t>(k.factionId);
+        h = h * 1000003u ^ static_cast<size_t>(k.itemClass);
+        h = h * 1000003u ^ static_cast<size_t>(k.quality);
+        return h;
+    }
+};
+using CategoryCountBuckets =
+    std::unordered_map<CategoryKey, std::vector<double>, CategoryKeyHash>;
+
+// Scan records carry ITYPE as a localized string (Const.lua field 3). Map
+// the enUS values to AzerothCore's ITEM_CLASS_* numeric ids so category
+// buckets can be keyed the same way the module indexes them. Obsolete
+// classes (Generic/Money/Permanent) never appear in real AH data and are
+// left out. A non-enUS scan simply won't match here -- those records still
+// feed the per-item stats, they're just left out of the category totals
+// (reported as "unrecognized item type" in the summary).
+static const std::unordered_map<std::string, int> kItypeToClass = {
+    {"Consumable", 0},   {"Container", 1},   {"Weapon", 2},   {"Gem", 3},
+    {"Armor", 4},        {"Reagent", 5},     {"Projectile", 6}, {"Trade Goods", 7},
+    {"Recipe", 9},       {"Quiver", 11},     {"Quest", 12},    {"Key", 13},
+    {"Miscellaneous", 15}, {"Glyph", 16},
+};
 
 // Guards stderr progress/warning output so lines from different worker
 // threads don't get interleaved mid-line.
@@ -457,7 +478,8 @@ static std::mutex g_logMutex;
 struct SkipCounts {
     size_t malformed   = 0; // fewer than 27 fields on the record
     size_t noItemId    = 0; // ITEMID field was 0/missing
-    size_t noBuyout    = 0; // bid-only listing, no buyout to normalize
+    size_t noBuyout    = 0; // bid-only listing, no buyout to normalize (price/stack only)
+    size_t unknownItype = 0; // ITYPE didn't map to a class -> left out of category totals
     size_t total() const { return malformed + noItemId + noBuyout; }
 };
 
@@ -472,6 +494,8 @@ struct SkipCounts {
 static bool accumulateFile(const std::string& path,
                             PriceBuckets& priceBuckets,
                             StackBuckets& stackBuckets,
+                            ListingCountBuckets& listingCountBuckets,
+                            CategoryCountBuckets& categoryCountBuckets,
                             size_t& recordCount,
                             SkipCounts& skips,
                             size_t& unknownFactionCount) {
@@ -497,6 +521,12 @@ static bool accumulateFile(const std::string& path,
             return fallback;
         try { return std::stol(s); } catch (...) { return fallback; }
     };
+
+    // One file == one AH snapshot. Count every auction in it, per item and per
+    // category (buyout or bid-only alike -- it's about how full the AH is), then
+    // fold one sample per key into the shared tallies at the end.
+    std::unordered_map<ItemEnchantKey, uint32_t, ItemEnchantKeyHash> perFileItemCounts;
+    std::unordered_map<CategoryKey, uint32_t, CategoryKeyHash> perFileCatCounts;
 
     for (const RopeBlock& block : ropes) {
         if (block.factionId == FACTION_ID_UNKNOWN) {
@@ -525,6 +555,21 @@ static bool accumulateFile(const std::string& path,
             long count = toLong(fields[10], 1);
             if (count <= 0) count = 1;
 
+            // Listing-depth tally: every auction counts, before the buyout
+            // filter below. Per item...
+            ++perFileItemCounts[ItemEnchantKey{block.factionId, itemId, enchant}];
+            // ...and per (class, quality), if ITYPE maps to a known class.
+            {
+                auto itypeIt = kItypeToClass.find(fields[2]);
+                long quality = toLong(fields[11], -1);
+                if (itypeIt == kItypeToClass.end() || quality < 0 || quality >= 8) {
+                    ++skips.unknownItype;
+                } else {
+                    ++perFileCatCounts[CategoryKey{
+                        block.factionId, itypeIt->second, static_cast<int32_t>(quality)}];
+                }
+            }
+
             double buyout = static_cast<double>(toLong(fields[16], 0));
             if (SKIP_NO_BUYOUT && buyout <= 0) { ++skips.noBuyout; continue; }
 
@@ -543,6 +588,12 @@ static bool accumulateFile(const std::string& path,
         }
     }
 
+    // Flush this snapshot's per-key totals: one sample per item / category.
+    for (auto& kv : perFileItemCounts)
+        listingCountBuckets[kv.first].push_back(static_cast<double>(kv.second));
+    for (auto& kv : perFileCatCounts)
+        categoryCountBuckets[kv.first].push_back(static_cast<double>(kv.second));
+
     return true;
 }
 
@@ -552,6 +603,8 @@ static bool accumulateFile(const std::string& path,
 struct WorkerResult {
     PriceBuckets priceBuckets;
     StackBuckets stackBuckets;
+    ListingCountBuckets listingCountBuckets;
+    CategoryCountBuckets categoryCountBuckets;
     size_t recordCount = 0;
     SkipCounts skips;
     size_t unknownFactionCount = 0;
@@ -567,6 +620,7 @@ static void workerThreadMain(const std::vector<std::string>& paths,
             std::cerr << "Scanning " << path << "...\n";
         }
         if (accumulateFile(path, result.priceBuckets, result.stackBuckets,
+                            result.listingCountBuckets, result.categoryCountBuckets,
                             result.recordCount, result.skips,
                             result.unknownFactionCount)) {
             ++result.filesProcessed;
@@ -578,10 +632,11 @@ static void workerThreadMain(const std::vector<std::string>& paths,
 
 // Folds one worker's private tally into the combined tally. Cheap: for a
 // key the combined map hasn't seen yet, the whole sample vector is moved
-// in; for a key both workers happened to hit, the smaller vector's
-// entries are appended onto the combined one. Generic over NumericBuckets
-// so it serves both the price tally and the stack-count tally.
-static void mergeNumericBuckets(NumericBuckets& combined, NumericBuckets&& worker) {
+// in; for a key both workers happened to hit, the smaller vector's entries
+// are appended. Templated so it serves the item-keyed tallies (price,
+// stack, per-item listing count) and the category-keyed tally alike.
+template <typename BucketMap>
+static void mergeBuckets(BucketMap& combined, BucketMap&& worker) {
     for (auto& kv : worker) {
         auto it = combined.find(kv.first);
         if (it == combined.end()) {
@@ -651,17 +706,22 @@ int main() {
     // sum up their counters.
     PriceBuckets priceBuckets;
     StackBuckets stackBuckets;
+    ListingCountBuckets listingCountBuckets;
+    CategoryCountBuckets categoryCountBuckets;
     size_t recordCount = 0, unknownFactionCount = 0;
     size_t filesProcessed = 0, filesSkipped = 0;
     SkipCounts skips;
 
     for (auto& result : results) {
-        mergeNumericBuckets(priceBuckets, std::move(result.priceBuckets));
-        mergeNumericBuckets(stackBuckets, std::move(result.stackBuckets));
+        mergeBuckets(priceBuckets, std::move(result.priceBuckets));
+        mergeBuckets(stackBuckets, std::move(result.stackBuckets));
+        mergeBuckets(listingCountBuckets, std::move(result.listingCountBuckets));
+        mergeBuckets(categoryCountBuckets, std::move(result.categoryCountBuckets));
         recordCount         += result.recordCount;
         skips.malformed      += result.skips.malformed;
         skips.noItemId        += result.skips.noItemId;
         skips.noBuyout         += result.skips.noBuyout;
+        skips.unknownItype   += result.skips.unknownItype;
         unknownFactionCount += result.unknownFactionCount;
         filesProcessed      += result.filesProcessed;
         filesSkipped        += result.filesSkipped;
@@ -672,85 +732,70 @@ int main() {
         return 1;
     }
 
-    // Build every output line first so we know the total item count before
-    // writing anything -- that count becomes row 1 of the file.
+    // Helper: append computeStats' 12 stat values (raw low/high/mean/median/
+    // mode, q1/q3, then the 5 outlier-adjusted values) to a line stream.
+    auto emitStats = [](std::ostringstream& line, const Stats& s) {
+        line << s.low << ':' << s.high << ':' << s.mean << ':'
+             << s.median << ':' << s.mode << ':'
+             << s.q1 << ':' << s.q3 << ':'
+             << s.adjLow << ':' << s.adjHigh << ':' << s.adjMean << ':'
+             << s.adjMedian << ':' << s.adjMode;
+    };
+
+    // Category header rows: faction:class:quality:snapshotCount + 12 stats.
+    std::vector<std::string> categoryLines;
+    categoryLines.reserve(categoryCountBuckets.size());
+    for (auto& bucket : categoryCountBuckets) {
+        Stats cs = computeStats(bucket.second);
+        std::ostringstream line;
+        line << bucket.first.factionId << ':' << bucket.first.itemClass << ':'
+             << bucket.first.quality << ':' << cs.sampleCount << ':';
+        emitStats(line, cs);
+        categoryLines.push_back(line.str());
+    }
+
+    // Item rows -- fixed width, always 41 fields:
+    //   faction:itemID:enchant:priceSampleCount
+    //   + 12 price stats + 12 stack-size stats + 12 listing-count stats
+    //   + listingSnapshotCount
     std::vector<std::string> lines;
     lines.reserve(priceBuckets.size());
 
-    // Track which (faction,item,enchant) bucket had the most price
-    // samples, so we can report it in the completion summary below.
-    int32_t  maxFactionId    = 0;
-    uint32_t maxItemId       = 0;
-    int32_t  maxEnchant      = 0;
-    size_t   maxSampleCount  = 0;
+    int32_t  maxFactionId   = 0;
+    uint32_t maxItemId      = 0;
+    int32_t  maxEnchant     = 0;
+    size_t   maxSampleCount = 0;
 
-    // How many rows had their stack-stat fields omitted (see the
-    // compression comment inside the loop below).
-    size_t compressedRowCount = 0;
+    static const std::vector<double> onesFallback = {1.0};
 
     for (auto& bucket : priceBuckets) {
         int32_t  factionId = bucket.first.factionId;
         uint32_t itemId    = bucket.first.itemId;
         int32_t  enchant   = bucket.first.enchant;
-        std::vector<double>& prices = bucket.second;
 
-        if (prices.size() > maxSampleCount) {
-            maxSampleCount = prices.size();
-            maxFactionId   = factionId;
-            maxItemId      = itemId;
-            maxEnchant     = enchant;
+        Stats priceStats = computeStats(bucket.second);
+        if (priceStats.sampleCount > maxSampleCount) {
+            maxSampleCount = priceStats.sampleCount;
+            maxFactionId = factionId; maxItemId = itemId; maxEnchant = enchant;
         }
 
-        Stats s = computeStats(prices);
+        auto stackIt = stackBuckets.find(bucket.first);
+        std::vector<double> stackCopy =
+            (stackIt != stackBuckets.end()) ? stackIt->second : onesFallback;
+        Stats stackStats = computeStats(stackCopy);
 
-        // Field order: identity fields, then sampleCount (so a consumer
-        // can weigh confidence before reading anything else), then the
-        // raw price stats, the quartile range, and the outlier-adjusted
-        // price stats -- 16 fields total, always present.
+        auto listIt = listingCountBuckets.find(bucket.first);
+        std::vector<double> listCopy =
+            (listIt != listingCountBuckets.end()) ? listIt->second : onesFallback;
+        Stats listStats = computeStats(listCopy);
+
         std::ostringstream line;
         line << factionId << ':' << itemId << ':' << enchant << ':'
-             << s.sampleCount << ':'
-             << s.low << ':' << s.high << ':' << s.mean << ':'
-             << s.median << ':' << s.mode << ':'
-             << s.q1 << ':' << s.q3 << ':'
-             << s.adjLow << ':' << s.adjHigh << ':' << s.adjMean << ':'
-             << s.adjMedian << ':' << s.adjMode;
-
-        // Compression: enchant/suffix != 0 means the item is equippable
-        // gear (only equippable items can roll a random-property suffix
-        // in WoW), and equippable items always have a max stack size of
-        // 1 -- confirmed against real data, 0 exceptions. That makes the
-        // 12 stack-stat fields entirely predictable (every one of them
-        // would read exactly "1") for these rows, so they're omitted
-        // rather than written out. A row's field count (16 vs 28) is
-        // therefore itself the signal: 16 fields means "stack size is
-        // always 1, not written"; 28 fields means "see the trailing 12
-        // stack fields for the real distribution." enchant == 0 doesn't
-        // guarantee the item IS stackable (plenty of gear also has no
-        // suffix), so those rows always keep the full stack stats since
-        // we can't safely predict them.
-        if (enchant != 0) {
-            ++compressedRowCount;
-        } else {
-            // Stack-count stats for this same bucket. stackBuckets is
-            // filled in lockstep with priceBuckets (same key, same
-            // record set), so this lookup should always succeed -- the
-            // fallback only matters as defensive coding, never in
-            // practice.
-            static const std::vector<double> emptyStackFallback = {0.0};
-            auto stackIt = stackBuckets.find(bucket.first);
-            std::vector<double> stackCountsCopy = (stackIt != stackBuckets.end())
-                ? stackIt->second
-                : emptyStackFallback;
-            Stats st = computeStats(stackCountsCopy);
-
-            line << ':'
-                 << st.low << ':' << st.high << ':' << st.mean << ':'
-                 << st.median << ':' << st.mode << ':'
-                 << st.q1 << ':' << st.q3 << ':'
-                 << st.adjLow << ':' << st.adjHigh << ':' << st.adjMean << ':'
-                 << st.adjMedian << ':' << st.adjMode;
-        }
+             << priceStats.sampleCount << ':';
+        emitStats(line, priceStats);
+        line << ':'; emitStats(line, stackStats);
+        line << ':'; emitStats(line, listStats);
+        line << ':' << listStats.sampleCount;
 
         lines.push_back(line.str());
     }
@@ -761,8 +806,10 @@ int main() {
         return 1;
     }
 
-    // Row 1: total item count, which equals the number of rows that follow.
-    out << lines.size() << '\n';
+    // Row 1: "<item row count> <category row count>". Category rows follow,
+    // then the item rows.
+    out << lines.size() << ' ' << categoryLines.size() << '\n';
+    for (const auto& line : categoryLines) out << line << '\n';
     for (const auto& line : lines) out << line << '\n';
     out.close();
 
@@ -780,10 +827,11 @@ int main() {
               << "    - missing/zero ITEMID:              " << skips.noItemId << "\n"
               << "    - bid-only, no BUYOUT" << (SKIP_NO_BUYOUT ? "" : " (kept, SKIP_NO_BUYOUT=false)")
               << ":         " << skips.noBuyout << "\n"
-              << "  Unique items out:  " << lines.size()
-              << " (rows in auctionsim.dat, deduped by faction+item+enchant)\n"
-              << "  Rows compressed:   " << compressedRowCount << " / " << lines.size()
-              << " (enchant != 0, stack stats omitted as always-1)\n"
+              << "    - unrecognized item type (no cat):  " << skips.unknownItype << "\n"
+              << "  Item rows out:     " << lines.size()
+              << " (deduped by faction+item+enchant)\n"
+              << "  Category rows out: " << categoryLines.size()
+              << " (deduped by faction+class+quality)\n"
               << "  Most price data:   faction " << maxFactionId
               << ", item " << maxItemId << ", enchant " << maxEnchant
               << " (" << maxSampleCount << " listings)\n"

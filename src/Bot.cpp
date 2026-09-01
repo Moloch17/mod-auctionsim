@@ -1,14 +1,14 @@
 #include "Bot.h"
 
-Bot::Bot(bool& _isEnabled)
+Bot::Bot(bool& outBuilt)
 {
-    this->accountID = sConfigMgr->GetOption<int>("AuctionSim.BotAccountID", 0);
-    this->characterID = sConfigMgr->GetOption<int>("AuctionSim.BotCharacterID", 0);
+    this->accountID = sConfigMgr->GetOption<uint32>("AuctionSim.BotAccountID", 0);
+    this->characterID = sConfigMgr->GetOption<uint32>("AuctionSim.BotCharacterID", 0);
 
     if (this->accountID == 0 || this->characterID == 0)
     {
         LOG_ERROR("module", "AuctionSim: invalid account/character id");
-        _isEnabled = false;
+        outBuilt = false;
         return;
     }
     LoginDatabasePreparedStatement* stmt = LoginDatabase.GetPreparedStatement(LOGIN_GET_USERNAME_BY_ID);
@@ -18,12 +18,14 @@ Bot::Bot(bool& _isEnabled)
     if (!result)
     {
         LOG_ERROR("module", "AuctionSim: Bot creation failed: didn't get info from database");
-        _isEnabled = false;
+        outBuilt = false;
         return;
     }
 
     Field* fields = result->Fetch();
     std::string accountName = fields[0].Get<std::string>();
+    // WorldSession(id, name, accountFlags=0, sock=nullptr, sec=SEC_PLAYER, expansion,
+    //              mute_time=0, locale, recruiter=0, isARecruiter=false, skipQueue=false, TotalTime=0)
     this->session = std::make_unique<WorldSession>(
         this->accountID,
         accountName.c_str(),
@@ -42,8 +44,3 @@ Bot::Bot(bool& _isEnabled)
 
     LOG_INFO("module", "AuctionSim: created bot");
 }
-
-int Bot::GetAccountID() { return this->accountID; }
-int Bot::GetCharacterID() { return this->characterID; }
-std::unique_ptr<WorldSession>& Bot::GetSession() { return this->session; }
-std::unique_ptr<Player>& Bot::GetPlayer() { return this->player; }

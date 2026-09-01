@@ -1,4 +1,7 @@
 #pragma once
+#include <cstdint>
+#include <unordered_map>
+#include <vector>
 #include "AuctionHouseMgr.h"
 #include "DatabaseEnvFwd.h"
 #include "ItemTemplate.h"
@@ -15,8 +18,13 @@ public:
     AuctionListingService(Bot& bot, ASConfig const& config);
 
     // existingCounts[itemClass][quality] = number of auctions of that class/quality
-    // already on the house, as tabulated by the caller.
-    void ListNewAuctions(AuctionHouseId houseId, int const (&existingCounts)[MAX_ITEM_CLASS][MAX_ITEM_QUALITY]);
+    // already on the house; itemAuctionCount[itemTemplateId] = number of auctions of
+    // that specific item already on the house. Both tabulated by the caller over
+    // every auction (bot-owned and bid-only included).
+    void ListNewAuctions(
+        AuctionHouseId houseId,
+        int const (&existingCounts)[MAX_ITEM_CLASS][MAX_ITEM_QUALITY],
+        std::unordered_map<uint32, int> const& itemAuctionCount);
 
     // Lists one scanned item immediately, with its own transaction. Used by the
     // ".auctionsim test" command to exercise the listing pipeline end-to-end.
@@ -29,4 +37,9 @@ private:
 
     Bot& _bot;
     ASConfig const& _config;
+
+    // Per-item selection weights, reused across every (class, quality) pass of one
+    // ListNewAuctions call so the fill loop doesn't heap-allocate per category.
+    // ListNewAuctions is not re-entrant (single world thread), so one buffer is safe.
+    std::vector<uint32> _weightBuffer;
 };

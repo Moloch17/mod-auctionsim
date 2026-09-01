@@ -83,7 +83,7 @@ namespace
                 }
             }
         }
-        return Fail("Listing masks configured", "every AuctionSim.*Percent mask is 0 -- nothing will ever be listed");
+        return Fail("Listing masks configured", "every listing multiplier is 0 -- nothing will ever be listed");
     }
 
     TestResult TestFindScannedItemRoundTrip(ASConfig const& config)
@@ -197,17 +197,30 @@ namespace
 
     TestResult TestScannedItemParse()
     {
-        // Old 6-field format is rejected.
+        // Old shorter formats are rejected: rows are a fixed 41 fields now.
         if (ScannedItem::TryParse("6:6543:-19:23229:8000:99000"))
         {
             return Fail("ScannedItem parse", "6-field (old format) line was accepted");
         }
+        if (ScannedItem::TryParse(
+                "6:6543:-19:12:8000:99000:23229:30000:8000:19000:30843:8100:31686:23000:29500:8000"))
+        {
+            return Fail("ScannedItem parse", "16-field (old gear format) line was accepted");
+        }
 
+        // 4 identity + 12 price + 12 stack + 12 listing-count + listingSnapshotCount.
+        //   price : adjLow 8100  adjHigh 31686  adjMedian 29500  q3 30843
+        //   stack : adjMode 20   adjLow 2       adjHigh 20
+        //   list  : adjMedian 3                 snapshotCount 47
         auto parsed = ScannedItem::TryParse(
-            "6:6543:-19:12:8000:99000:23229:30000:8000:19000:30843:8100:31686:23000:29500:8000");
+            "6:6543:-19:12"
+            ":8000:99000:23229:30000:8000:19000:30843:8100:31686:23000:29500:8000"
+            ":2:20:14:20:20:5:20:2:20:14:20:20"
+            ":1:12:4:3:2:2:6:1:9:4:3:2"
+            ":47");
         if (!parsed)
         {
-            return Fail("ScannedItem parse", "valid 16-field line was rejected");
+            return Fail("ScannedItem parse", "valid 41-field line was rejected");
         }
 
         ScannedItem const& s = *parsed;
@@ -227,28 +240,26 @@ namespace
         {
             return Fail("ScannedItem parse", Acore::StringFormat("buy ceiling {} (expected q3 30843)", s.GetBuyCeiling()));
         }
-        // 16-field row => equippable gear, stack size implicitly 1.
-        if (s.GetTypicalStackSize() != 1 || s.GetStackLow() != 1 || s.GetStackHigh() != 1)
-        {
-            return Fail("ScannedItem parse", "16-field row did not default stack size to 1");
-        }
-
-        // 28-field row: trailing 12 fields carry the real stack distribution.
-        //   stack: low2 high20 mean14 median20 mode20 q1=5 q3=20  adj: low2 high20 mean14 median20 mode20
-        auto stacked = ScannedItem::TryParse(
-            "2:40211:0:114:234000:450000:251904:251999:251999:244999:251999:235000:260000:248340:251999:251999"
-            ":2:20:14:20:20:5:20:2:20:14:20:20");
-        if (!stacked)
-        {
-            return Fail("ScannedItem parse", "valid 28-field line was rejected");
-        }
-        if (stacked->GetTypicalStackSize() != 20 || stacked->GetStackLow() != 2 || stacked->GetStackHigh() != 20)
+        // Stack block is always present now -- gear included.
+        if (s.GetTypicalStackSize() != 20 || s.GetStackLow() != 2 || s.GetStackHigh() != 20)
         {
             return Fail(
                 "ScannedItem parse",
                 Acore::StringFormat(
                     "stack stats: typical={} low={} high={} (expected 20/2/20)",
-                    stacked->GetTypicalStackSize(), stacked->GetStackLow(), stacked->GetStackHigh()));
+                    s.GetTypicalStackSize(), s.GetStackLow(), s.GetStackHigh()));
+        }
+        if (s.GetTypicalListingCount() != 3)  // listAdjMedian
+        {
+            return Fail(
+                "ScannedItem parse",
+                Acore::StringFormat("typical listing count {} (expected listAdjMedian 3)", s.GetTypicalListingCount()));
+        }
+        if (s.GetListingSnapshotCount() != 47)
+        {
+            return Fail(
+                "ScannedItem parse",
+                Acore::StringFormat("listing snapshot count {} (expected 47)", s.GetListingSnapshotCount()));
         }
         return Pass("ScannedItem parse");
     }
@@ -333,15 +344,100 @@ namespace
 
     TestResult TestListingCountMath()
     {
-        if (AuctionPricing::CalculateTargetListingCount(0.5f, 10) != 5)
-        {
-            return Fail("Listing count math", "0.5 mask over pool of 10 should target 5");
-        }
         if (AuctionPricing::CalculateItemsToList(5, 2) != 3)
         {
             return Fail("Listing count math", "target 5 minus existing 2 should be 3");
         }
+
+        for (int i = 0; i < 100; i++)
+        {
+            uint32 target = AuctionPricing::RollCategoryTarget(4, 9);
+            if (target < 4 || target > 9)
+            {
+                return Fail("Listing count math", Acore::StringFormat("RollCategoryTarget(4,9) rolled {}", target));
+            }
+        }
+        // Order-tolerant: swapped bounds behave the same.
+        for (int i = 0; i < 20; i++)
+        {
+            uint32 target = AuctionPricing::RollCategoryTarget(9, 4);
+            if (target < 4 || target > 9)
+            {
+                return Fail("Listing count math", Acore::StringFormat("RollCategoryTarget(9,4) rolled {}", target));
+            }
+        }
+        // Degenerate band collapses to the single value.
+        if (AuctionPricing::RollCategoryTarget(7, 7) != 7)
+        {
+            return Fail("Listing count math", "RollCategoryTarget(7,7) did not return 7");
+        }
         return Pass("Listing count math");
+    }
+
+    TestResult TestWeightedPick()
+    {
+        // All-zero weights -> the "nothing to pick" sentinel (== size()).
+        if (AuctionPricing::WeightedPick({0, 0, 0}) != 3)
+        {
+            return Fail("WeightedPick", "all-zero weights did not return the size() sentinel");
+        }
+        // The only non-zero entry is always chosen.
+        for (int i = 0; i < 50; i++)
+        {
+            if (AuctionPricing::WeightedPick({0, 7, 0}) != 1)
+            {
+                return Fail("WeightedPick", "the only non-zero weight was not always picked");
+            }
+        }
+        // Uniform weights: every index is in range and reachable.
+        bool seen[3] = {false, false, false};
+        for (int i = 0; i < 400; i++)
+        {
+            size_t idx = AuctionPricing::WeightedPick({1, 1, 1});
+            if (idx >= 3)
+            {
+                return Fail("WeightedPick", Acore::StringFormat("returned out-of-range index {}", idx));
+            }
+            seen[idx] = true;
+        }
+        if (!seen[0] || !seen[1] || !seen[2])
+        {
+            return Fail("WeightedPick", "uniform weights never reached some index across 400 draws");
+        }
+        return Pass("WeightedPick");
+    }
+
+    TestResult TestCategoryDepthParse(ASConfig const& config)
+    {
+        for (uint32 house = 0; house < ASConfig::kAuctionHouseIndexBound; house++)
+        {
+            for (uint32 itemClass = 0; itemClass < MAX_ITEM_CLASS; itemClass++)
+            {
+                for (uint32 quality = 0; quality < MAX_ITEM_QUALITY; quality++)
+                {
+                    ASConfig::CategoryDepth const& depth =
+                        config.GetCategoryDepth(static_cast<AuctionHouseId>(house), itemClass, quality);
+                    if (!depth.has)
+                    {
+                        continue;
+                    }
+                    if (depth.q1 > depth.median)
+                    {
+                        return Fail(
+                            "Category depth parse",
+                            Acore::StringFormat(
+                                "house={} class={} quality={}: q1 {} > median {}",
+                                house, itemClass, quality, depth.q1, depth.median));
+                    }
+                    return Pass(
+                        "Category depth parse",
+                        Acore::StringFormat(
+                            "house={} class={} quality={} q1={} median={}",
+                            house, itemClass, quality, depth.q1, depth.median));
+                }
+            }
+        }
+        return Fail("Category depth parse", "no category-depth rows were loaded from auctionsim.dat");
     }
 
     TestResult TestIsWithinLevelCapBoundary()
@@ -511,12 +607,14 @@ namespace AuctionSimTests
             TestIsListablePriceBoundary(),
             TestRollAuctionDurationBounds(),
             TestScannedItemParse(),
+            TestCategoryDepthParse(config),
             TestRollBuyoutPriceSanity(),
             TestRollBuyToleranceBounds(),
             TestShouldBuyAtPriceBoundaries(),
             TestRollBuyTimeBounds(),
             TestCalculateRemainingScans(),
             TestListingCountMath(),
+            TestWeightedPick(),
             TestIsWithinLevelCapBoundary(),
             TestBuyQueuePopulatesOnQualifyingPrice(bot),
             TestBuyQueueDedupesRescan(bot),

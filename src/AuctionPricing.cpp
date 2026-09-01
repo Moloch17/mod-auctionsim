@@ -24,6 +24,11 @@ namespace
     // market price so repeat listings of a rarely-seen item still vary a little.
     constexpr uint32 kMinSamplesForSpread = 4;
     constexpr float kThinSampleJitter = 0.08f;
+
+    // RollBuyoutPrice redraws split-normal samples that land outside [low, high]
+    // rather than clamping them; with the bounds ~3 sigma out a redraw is rare, so
+    // this many attempts is plenty before falling back to a clamp.
+    constexpr uint32 kBuyoutResampleLimit = 64;
     constexpr uint32 kMinDurationSeconds = 3600;   // 1 hour
     constexpr uint32 kMaxDurationSeconds = 43200;  // 12 hours
 
@@ -45,14 +50,50 @@ namespace
 
 namespace AuctionPricing
 {
-    int CalculateTargetListingCount(float mask, size_t poolSize)
+    uint32 RollCategoryTarget(uint32 q1, uint32 median)
     {
-        return static_cast<int>(mask * poolSize);
+        if (median < q1)
+        {
+            std::swap(q1, median);
+        }
+        return urand(q1, median);
     }
 
     int CalculateItemsToList(int targetCount, int existingCount)
     {
         return targetCount - existingCount;
+    }
+
+    size_t WeightedPick(std::vector<uint32> const& weights, uint32 total)
+    {
+        if (total == 0)
+        {
+            return weights.size();
+        }
+
+        uint32 roll = urand(1, total);
+        uint32 cumulative = 0;
+        for (size_t i = 0; i < weights.size(); ++i)
+        {
+            cumulative += weights[i];
+            if (roll <= cumulative)
+            {
+                return i;
+            }
+        }
+        return weights.size() - 1;
+    }
+
+    size_t WeightedPick(std::vector<uint32> const& weights)
+    {
+        // Category pools hold a few thousand items with small per-item weights, so
+        // the running total stays well inside uint32.
+        uint32 total = 0;
+        for (uint32 w : weights)
+        {
+            total += w;
+        }
+        return WeightedPick(weights, total);
     }
 
     uint32 RollStackSize(uint32 typical, uint32 spreadLow, uint32 spreadHigh, uint32 itemMaxStack)
@@ -129,7 +170,7 @@ namespace AuctionPricing
         {
             float z = standardNormal(RandomEngine::Instance());
             price = marketF + z * (z < 0.0f ? sigmaLow : sigmaHigh);
-        } while ((price < low || price > high) && ++attempts < 64);
+        } while ((price < low || price > high) && ++attempts < kBuyoutResampleLimit);
 
         price = std::clamp(price, static_cast<float>(low), static_cast<float>(high));
 

@@ -19,23 +19,36 @@ AuctionSim.MaxRequiredLevel = 0
 # are skipped before being created. 0 disables this filter.
 AuctionSim.MaxItemLevel = 0
 
-# The percent of items in each category to list on the AH as a 4 digit number.
-# For example, 0050 is 50%
-# If you want duplicates set a value higher than 0100
-AuctionSim.ConsumablePercent    = GREY: 0000, WHITE: 0100, GREEN: 0050, BLUE: 0050, PURPLE: 0020, ORANGE: 0000, YELLOW: 0000
-AuctionSim.ContainerPercent     = GREY: 0000, WHITE: 0300, GREEN: 0200, BLUE: 0200, PURPLE: 0020, ORANGE: 0000, YELLOW: 0000
-AuctionSim.WeaponPercent        = GREY: 0000, WHITE: 0000, GREEN: 0010, BLUE: 0010, PURPLE: 0020, ORANGE: 0000, YELLOW: 0000
-AuctionSim.GemPercent           = GREY: 0000, WHITE: 0050, GREEN: 0050, BLUE: 0050, PURPLE: 0020, ORANGE: 0000, YELLOW: 0000
-AuctionSim.ArmorPercent         = GREY: 0000, WHITE: 0000, GREEN: 0001, BLUE: 0001, PURPLE: 0001, ORANGE: 0000, YELLOW: 0000
-AuctionSim.ReagentPercent       = GREY: 0000, WHITE: 0000, GREEN: 0000, BLUE: 0000, PURPLE: 0000, ORANGE: 0000, YELLOW: 0000
-AuctionSim.ProjectilePercent    = GREY: 0000, WHITE: 0000, GREEN: 0300, BLUE: 0300, PURPLE: 0300, ORANGE: 0000, YELLOW: 0000
-AuctionSim.TradeGoodsPercent    = GREY: 0000, WHITE: 0500, GREEN: 0500, BLUE: 0500, PURPLE: 0500, ORANGE: 0000, YELLOW: 0500
-AuctionSim.GenericPercent       = GREY: 0000, WHITE: 0300, GREEN: 0000, BLUE: 0000, PURPLE: 0000, ORANGE: 0000, YELLOW: 0000
-AuctionSim.RecipePercent        = GREY: 0000, WHITE: 0010, GREEN: 0010, BLUE: 0010, PURPLE: 0010, ORANGE: 0000, YELLOW: 0000
-AuctionSim.MoneyPercent         = GREY: 0000, WHITE: 0000, GREEN: 0000, BLUE: 0000, PURPLE: 0000, ORANGE: 0000, YELLOW: 0000
-AuctionSim.QuiverPercent        = GREY: 0000, WHITE: 0100, GREEN: 0100, BLUE: 0100, PURPLE: 0100, ORANGE: 0000, YELLOW: 0000
-AuctionSim.QuestPercent         = GREY: 0000, WHITE: 0050, GREEN: 0050, BLUE: 0030, PURPLE: 0010, ORANGE: 0000, YELLOW: 0000
-AuctionSim.KeyPercent           = GREY: 0000, WHITE: 0020, GREEN: 0000, BLUE: 0000, PURPLE: 0000, ORANGE: 0000, YELLOW: 0000
-AuctionSim.PermanentPercent     = GREY: 0000, WHITE: 0000, GREEN: 0000, BLUE: 0000, PURPLE: 0000, ORANGE: 0000, YELLOW: 0000
-AuctionSim.MiscPercent          = GREY: 0000, WHITE: 0030, GREEN: 0030, BLUE: 0030, PURPLE: 0030, ORANGE: 0000, YELLOW: 0000
-AuctionSim.GlyphPercent         = GREY: 0000, WHITE: 0100, GREEN: 0000, BLUE: 0000, PURPLE: 0000, ORANGE: 0000, YELLOW: 0000
+# Per-category listing multiplier vs. the real market.
+#
+# The bot decides how full to keep each (category, quality) from real Auctioneer
+# scan data baked into auctionsim.dat: it tops a category up only once its live
+# auction count drops below the observed lower quartile, and never past a random
+# point between that quartile and the median. These values scale that target:
+#
+#   1     match the real market (the default)
+#   1.5   keep the category 50% fuller than the real market
+#   0.5   keep it half as full
+#   0     never list anything in that category/quality
+#
+# Plain decimals -- enter 1, 1.5, 0.25, 0. The companion addon edits the same grid.
+#
+# The Warmane - Lordaeron realm has a hugely saturated auction house so the values
+# were uniformly scaled down to a more reasonable level.
+AuctionSim.ConsumablePercent    = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
+AuctionSim.ContainerPercent     = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
+AuctionSim.WeaponPercent        = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
+AuctionSim.GemPercent           = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
+AuctionSim.ArmorPercent         = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
+AuctionSim.ReagentPercent       = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
+AuctionSim.ProjectilePercent    = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
+AuctionSim.TradeGoodsPercent    = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
+AuctionSim.GenericPercent       = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
+AuctionSim.RecipePercent        = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
+AuctionSim.MoneyPercent         = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
+AuctionSim.QuiverPercent        = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
+AuctionSim.QuestPercent         = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
+AuctionSim.KeyPercent           = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
+AuctionSim.PermanentPercent     = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
+AuctionSim.MiscPercent          = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
+AuctionSim.GlyphPercent         = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05

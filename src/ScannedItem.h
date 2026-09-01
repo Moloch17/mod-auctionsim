@@ -1,48 +1,62 @@
 #pragma once
 
+#include <cstddef>
 #include <optional>
 #include <string_view>
+#include <vector>
 #include "Define.h"
 
+// One 12-value statistics block as emitted by data/compile-data.cpp: raw
+// low/high/mean/median/mode, the raw quartiles, then the five central-tendency
+// values recomputed after Tukey 1.5*IQR outlier trimming. The field order here
+// MUST match compile-data.cpp's emitStats(); ParseStatBlock() relies on it.
+struct StatBlock
+{
+    uint32 low = 0, high = 0, mean = 0, median = 0, mode = 0;
+    uint32 q1 = 0, q3 = 0;
+    uint32 adjLow = 0, adjHigh = 0, adjMean = 0, adjMedian = 0, adjMode = 0;
+};
+
+// Parses kStatsPerBlock consecutive fields starting at `offset` into `out`.
+// Values from the int64 pipeline that overflow uint32 are clamped, not rejected.
+// False if any field is non-numeric or `fields` is too short.
+bool ParseStatBlock(std::vector<std::string_view> const& fields, size_t offset, StatBlock& out);
+
 // One (faction, itemID, suffix) bucket of compiled market data, produced by
-// data/compile-data.cpp from real Auctioneer scans. Rows are VARIABLE LENGTH:
+// data/compile-data.cpp from real Auctioneer scans. Every item row is a FIXED
+// kRowFields (41) fields:
 //
-//   16 fields  suffix != 0 -- equippable gear, which can only ever stack to 1,
-//              so the 12 stack-size fields are omitted and taken as all-1.
-//   28 fields  suffix == 0 -- the trailing 12 fields carry the real stack-size
-//              distribution.
+//   faction : itemID : suffix : priceSampleCount
+//     : <12 price stats> : <12 stack-size stats> : <12 listing-count stats>
+//     : listingSnapshotCount
 //
-//   faction : itemID : suffix : sampleCount
-//     : priceLow : priceHigh : priceMean : priceMedian : priceMode : priceQ1 : priceQ3
-//     : priceAdjLow : priceAdjHigh : priceAdjMean : priceAdjMedian : priceAdjMode
-//     [ : stackLow : stackHigh : stackMean : stackMedian : stackMode : stackQ1 : stackQ3
-//       : stackAdjLow : stackAdjHigh : stackAdjMean : stackAdjMedian : stackAdjMode ]
+//   price    per-unit buyout price. priceSampleCount = # buyout listings seen.
+//   stack    listing stack size. Same record set as price. All-1 for gear
+//            (written out anyway to keep every row one width).
+//   listing  how many auctions of this item exist per AH snapshot (every
+//            auction, buyout or bid-only). listingSnapshotCount = # snapshots.
 //
-//   sampleCount  listings behind this row; applies to both stat groups.
-//   *Mean/Median/Mode  central-tendency stats over every listing (raw).
-//   *Q1 / *Q3          25th / 75th percentile of the raw list.
-//   *Adj*             the same stats recomputed after dropping listings outside
-//                     Tukey's [Q1 - 1.5*IQR, Q3 + 1.5*IQR] fences -- the market
-//                     with one-off troll / mistake listings removed.
-//
-// Every listing and buying decision runs off the adjusted stats and the
-// interquartile band, never the raw min/max, so one extreme listing can't move
-// the bot's idea of an item's price or its normal stack size.
+// Every listing/buying decision runs off the adjusted stats and the quartile
+// band, never the raw min/max, so one extreme listing can't move the bot's idea
+// of an item's price, stack size or market depth.
 class ScannedItem
 {
+public:
+    static constexpr size_t kIdentityFields = 4;  // faction, itemID, suffix, priceSampleCount
+    static constexpr size_t kStatsPerBlock = 12;  // one StatBlock
+    static constexpr size_t kStatBlockCount = 3;  // price, stack, listing-count
+    static constexpr size_t kRowFields = kIdentityFields + kStatsPerBlock * kStatBlockCount + 1;  // 41
+
+private:
     uint8 factionNum = 0;
     uint32 itemID = 0;
     int32 suffixID = 0;  // signed: negative = enchantment/suffix table, positive = random property table
     uint32 sampleCount = 0;
 
-    uint32 rawLow = 0, rawHigh = 0, rawMean = 0, rawMedian = 0, rawMode = 0;
-    uint32 q1 = 0, q3 = 0;
-    uint32 adjLow = 0, adjHigh = 0, adjMean = 0, adjMedian = 0, adjMode = 0;
-
-    // Left at 1 for 16-field rows (gear -- never stacks past 1).
-    uint32 stackLow = 1, stackHigh = 1, stackMean = 1, stackMedian = 1, stackMode = 1;
-    uint32 stackQ1 = 1, stackQ3 = 1;
-    uint32 stackAdjLow = 1, stackAdjHigh = 1, stackAdjMean = 1, stackAdjMedian = 1, stackAdjMode = 1;
+    StatBlock price;
+    StatBlock stack;
+    StatBlock listing;
+    uint32 listingSnapshotCount = 0;
 
     ScannedItem() = default;
 
@@ -79,6 +93,14 @@ public:
     uint32 GetStackLow() const;
     uint32 GetStackHigh() const;
 
-    // Parses one 16- or 28-field auctionsim.dat line. std::nullopt on malformed input.
+    // How many concurrent auctions of this item the market typically carries --
+    // the outlier-trimmed median snapshot count. Used both to weight item
+    // selection and to cap how many of this item the bot keeps listed.
+    uint32 GetTypicalListingCount() const;
+
+    // Number of AH snapshots this item appeared in (confidence for the count stat).
+    uint32 GetListingSnapshotCount() const { return listingSnapshotCount; }
+
+    // Parses one fixed kRowFields-field auctionsim.dat item row. std::nullopt if malformed.
     static std::optional<ScannedItem> TryParse(std::string_view dataLine);
 };

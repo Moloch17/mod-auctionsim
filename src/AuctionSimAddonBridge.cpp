@@ -1,11 +1,12 @@
 #include "AuctionSimAddonBridge.h"
-#include <charconv>
 #include <chrono>
+#include <string>
 #include <string_view>
 #include <unordered_set>
 #include <vector>
 #include "ASConfig.h"
 #include "ASConfigWriter.h"
+#include "ASParse.h"
 #include "AuctionHouseMgr.h"
 #include "AuctionSim.h"
 #include "CharacterCache.h"
@@ -22,17 +23,42 @@
 
 namespace
 {
+    // The wire is "MSGTYPE\tfield\tfield...". The send path formats "{}\t{}" with the
+    // bare prefix; the receive path matches prefix + '\t' so a lone "AHSIM" can't
+    // be mistaken for a command. interface_addon/ahsim/AHSim.lua mirrors AHSim.OP.
     constexpr std::string_view kPrefix = "AHSIM";
     constexpr std::string_view kFullPrefixWithTab = "AHSIM\t";
 
-    // SETCONFIG keys awaiting a SAVECONFIG. One global set: one bot, one GM at a time.
-    std::unordered_set<std::string> stagedKeys;
-
-    bool ParseUInt32(std::string_view text, uint32& out)
+    namespace Msg
     {
-        auto result = std::from_chars(text.data(), text.data() + text.size(), out);
-        return result.ec == std::errc() && result.ptr == text.data() + text.size();
+        // Inbound: client -> server command verbs.
+        constexpr std::string_view WhoAmI = "WHOAMI";
+        constexpr std::string_view GetConfig = "GETCONFIG";
+        constexpr std::string_view SetConfig = "SETCONFIG";
+        constexpr std::string_view SaveConfig = "SAVECONFIG";
+        constexpr std::string_view Scan = "SCAN";
+        constexpr std::string_view Delete = "DELETE";
+        constexpr std::string_view Test = "TEST";
+        constexpr std::string_view CleanOverCap = "CLEANOVERCAP";
+        constexpr std::string_view ShowQueue = "SHOWQUEUE";
+        constexpr std::string_view SetBotChar = "SETBOTCHAR";
+
+        // Outbound: server -> client message types.
+        constexpr std::string_view Error = "ERROR";
+        constexpr std::string_view Config = "CONFIG";
+        constexpr std::string_view ConfigSaved = "CONFIGSAVED";
+        constexpr std::string_view ScanResult = "SCANRESULT";
+        constexpr std::string_view DeleteResult = "DELETERESULT";
+        constexpr std::string_view TestResult = "TESTRESULT";
+        constexpr std::string_view TestDone = "TESTDONE";
+        constexpr std::string_view QueueInfo = "QUEUEINFO";
+        constexpr std::string_view CleanResult = "CLEANRESULT";
+        constexpr std::string_view SetBotCharResult = "SETBOTCHARRESULT";
     }
+
+    // SETCONFIG keys awaiting a SAVECONFIG. One global set: worldserver hooks are
+    // single-threaded and there is one bot / one GM editing at a time.
+    std::unordered_set<std::string> stagedKeys;
 
     void SendMessage(Player* target, std::string const& body)
     {
@@ -45,7 +71,10 @@ namespace
         target->Whisper(Acore::StringFormat("{}\t{}", kPrefix, body), LANG_ADDON, target);
     }
 
-    void SendError(Player* target, std::string const& message) { SendMessage(target, "ERROR\t" + message); }
+    void SendError(Player* target, std::string const& message)
+    {
+        SendMessage(target, Acore::StringFormat("{}\t{}", Msg::Error, message));
+    }
 
     // Same SEC_ADMINISTRATOR bar as the ".auctionsim" chat commands. A non-GM gets
     // no reply at all, so their client never builds the window.
@@ -75,7 +104,7 @@ namespace
 
     // Not gated on RequireEnabled: the panel reads/edits config while disabled too.
     // config loads at startup, so a null here means auctionsim.dat failed to parse.
-    void HandleGetConfig(Player* target)
+    void HandleGetConfig(Player* target, std::vector<std::string_view> const&)
     {
         ASConfig* config = AuctionSim::instance()->GetConfig();
         if (!config)
@@ -85,18 +114,18 @@ namespace
         }
 
         AuctionSim* sim = AuctionSim::instance();
-        SendMessage(target, Acore::StringFormat("CONFIG\tEnabled\t{}", sim->isEnabled ? 1 : 0));
-        SendMessage(target, Acore::StringFormat("CONFIG\tStartupScan\t{}", sim->startupScan ? 1 : 0));
-        SendMessage(target, Acore::StringFormat("CONFIG\tMaxRequiredLevel\t{}", config->maxRequiredLevel));
-        SendMessage(target, Acore::StringFormat("CONFIG\tMaxItemLevel\t{}", config->maxItemLevel));
+        SendMessage(target, Acore::StringFormat("{}\tEnabled\t{}", Msg::Config, sim->isEnabled ? 1 : 0));
+        SendMessage(target, Acore::StringFormat("{}\tStartupScan\t{}", Msg::Config, sim->startupScan ? 1 : 0));
+        SendMessage(target, Acore::StringFormat("{}\tMaxRequiredLevel\t{}", Msg::Config, config->maxRequiredLevel));
+        SendMessage(target, Acore::StringFormat("{}\tMaxItemLevel\t{}", Msg::Config, config->maxItemLevel));
 
         for (ASConfig::MaskKeyEntry const& entry : ASConfig::AllMaskKeys())
         {
-            float mask = config->ItemSelectionMask[entry.itemClass][entry.quality];
-            uint32 percentValue = static_cast<uint32>(mask * 100.0f + 0.5f);
-            std::string body =
-                Acore::StringFormat("CONFIG\t{}.{}\t{}", entry.percentConfigKey, entry.qualityLabel, percentValue);
-            SendMessage(target, body);
+            float multiplier = config->ItemSelectionMask[entry.itemClass][entry.quality];
+            SendMessage(
+                target,
+                Acore::StringFormat(
+                    "{}\t{}.{}\t{:g}", Msg::Config, entry.percentConfigKey, entry.qualityLabel, multiplier));
         }
     }
 
@@ -141,22 +170,22 @@ namespace
             return;
         }
 
-        uint32 numericValue = 0;
-        if (!ParseUInt32(valueStr, numericValue))
+        if (key == "MaxRequiredLevel" || key == "MaxItemLevel")
         {
-            SendError(target, Acore::StringFormat("'{}' is not a valid number", valueStr));
-            return;
-        }
-
-        if (key == "MaxRequiredLevel")
-        {
-            config->maxRequiredLevel = numericValue;
-            stagedKeys.insert(key);
-            return;
-        }
-        if (key == "MaxItemLevel")
-        {
-            config->maxItemLevel = numericValue;
+            uint32 numericValue = 0;
+            if (!ASParse::Integer(valueStr, numericValue))
+            {
+                SendError(target, Acore::StringFormat("'{}' is not a valid number", valueStr));
+                return;
+            }
+            if (key == "MaxRequiredLevel")
+            {
+                config->maxRequiredLevel = numericValue;
+            }
+            else
+            {
+                config->maxItemLevel = numericValue;
+            }
             stagedKeys.insert(key);
             return;
         }
@@ -165,7 +194,13 @@ namespace
         uint32 quality = 0;
         if (ASConfig::ResolveMaskKey(key, itemClass, quality))
         {
-            config->ItemSelectionMask[itemClass][quality] = numericValue / 100.0f;
+            float multiplier = 0.0f;
+            if (!ASParse::Float(valueStr, multiplier) || multiplier < 0.0f)
+            {
+                SendError(target, Acore::StringFormat("'{}' is not a valid multiplier", valueStr));
+                return;
+            }
+            config->ItemSelectionMask[itemClass][quality] = multiplier;
             stagedKeys.insert(key);
             return;
         }
@@ -174,7 +209,7 @@ namespace
     }
 
     // Not gated on RequireEnabled: a save that persists Enabled=0 must still work.
-    void HandleSaveConfig(Player* target)
+    void HandleSaveConfig(Player* target, std::vector<std::string_view> const&)
     {
         ASConfig* config = AuctionSim::instance()->GetConfig();
         if (!config)
@@ -183,28 +218,28 @@ namespace
             return;
         }
 
-        std::string filepath = GetConfFilePath();
-        bool allOk = true;
+        AuctionSim* sim = AuctionSim::instance();
 
+        // Collect every staged change, then persist them in one read + one write.
+        std::vector<ASConfigWriter::Edit> edits;
+        edits.reserve(stagedKeys.size());
         for (std::string const& key : stagedKeys)
         {
-            bool ok = false;
             if (key == "Enabled")
             {
-                ok = ASConfigWriter::SetScalarValue(filepath, key, AuctionSim::instance()->isEnabled ? "1" : "0");
+                edits.push_back({key, "", sim->isEnabled ? "1" : "0"});
             }
             else if (key == "StartupScan")
             {
-                ok = ASConfigWriter::SetScalarValue(filepath, key, AuctionSim::instance()->startupScan ? "1" : "0");
+                edits.push_back({key, "", sim->startupScan ? "1" : "0"});
             }
             else if (key == "MaxRequiredLevel")
             {
-                ok = ASConfigWriter::SetScalarValue(
-                    filepath, key, Acore::StringFormat("{}", config->maxRequiredLevel));
+                edits.push_back({key, "", Acore::StringFormat("{}", config->maxRequiredLevel)});
             }
             else if (key == "MaxItemLevel")
             {
-                ok = ASConfigWriter::SetScalarValue(filepath, key, Acore::StringFormat("{}", config->maxItemLevel));
+                edits.push_back({key, "", Acore::StringFormat("{}", config->maxItemLevel)});
             }
             else
             {
@@ -212,26 +247,28 @@ namespace
                 uint32 quality = 0;
                 if (ASConfig::ResolveMaskKey(key, itemClass, quality))
                 {
-                    uint32 percentValue =
-                        static_cast<uint32>(config->ItemSelectionMask[itemClass][quality] * 100.0f + 0.5f);
                     auto dotPos = key.find('.');
-                    ok = ASConfigWriter::SetMaskValue(
-                        filepath, key.substr(0, dotPos), key.substr(dotPos + 1), percentValue);
+                    edits.push_back(
+                        {key.substr(0, dotPos),
+                         key.substr(dotPos + 1),
+                         Acore::StringFormat("{:g}", config->ItemSelectionMask[itemClass][quality])});
                 }
             }
-            allOk = allOk && ok;
         }
+
+        bool allOk = ASConfigWriter::SetMany(GetConfFilePath(), edits);
 
         stagedKeys.clear();
         SendMessage(
             target,
             Acore::StringFormat(
-                "CONFIGSAVED\t{}\t{}",
+                "{}\t{}\t{}",
+                Msg::ConfigSaved,
                 allOk ? "ok" : "error",
                 allOk ? "saved" : "one or more values failed to save, check the server log"));
     }
 
-    void HandleScan(Player* target)
+    void HandleScan(Player* target, std::vector<std::string_view> const&)
     {
         if (!RequireEnabled(target))
         {
@@ -248,10 +285,10 @@ namespace
         auto end = std::chrono::high_resolution_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
-        SendMessage(target, Acore::StringFormat("SCANRESULT\t{}\t{}\t{}", elapsed, after - before, after));
+        SendMessage(target, Acore::StringFormat("{}\t{}\t{}\t{}", Msg::ScanResult, elapsed, after - before, after));
     }
 
-    void HandleDelete(Player* target)
+    void HandleDelete(Player* target, std::vector<std::string_view> const&)
     {
         if (!RequireEnabled(target))
         {
@@ -263,10 +300,10 @@ namespace
         auto end = std::chrono::high_resolution_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
-        SendMessage(target, Acore::StringFormat("DELETERESULT\t{}", elapsed));
+        SendMessage(target, Acore::StringFormat("{}\t{}", Msg::DeleteResult, elapsed));
     }
 
-    void HandleTest(Player* target)
+    void HandleTest(Player* target, std::vector<std::string_view> const&)
     {
         if (!RequireEnabled(target))
         {
@@ -284,17 +321,18 @@ namespace
             SendMessage(
                 target,
                 Acore::StringFormat(
-                    "TESTRESULT\t{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}",
+                    Msg::TestResult,
                     i + 1,
                     results.size(),
                     results[i].passed ? "pass" : "fail",
                     results[i].name,
                     results[i].detail));
         }
-        SendMessage(target, Acore::StringFormat("TESTDONE\t{}\t{}", passed, results.size()));
+        SendMessage(target, Acore::StringFormat("{}\t{}\t{}", Msg::TestDone, passed, results.size()));
     }
 
-    void HandleCleanOverCap(Player* target)
+    void HandleCleanOverCap(Player* target, std::vector<std::string_view> const&)
     {
         if (!RequireEnabled(target))
         {
@@ -306,29 +344,27 @@ namespace
         auto end = std::chrono::high_resolution_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
-        SendMessage(target, Acore::StringFormat("CLEANRESULT\t{}\t{}", removed, elapsed));
+        SendMessage(target, Acore::StringFormat("{}\t{}\t{}", Msg::CleanResult, removed, elapsed));
     }
 
-    void HandleShowQueue(Player* target)
+    void HandleShowQueue(Player* target, std::vector<std::string_view> const&)
     {
         if (!RequireEnabled(target))
         {
             return;
         }
 
-        auto const& queue = AuctionSim::instance()->GetBuyQueue();
-        if (queue.empty())
-        {
-            SendMessage(target, "QUEUEINFO\t0\t0\t0");
-            return;
-        }
+        AuctionSim::BuyQueueStatus status =
+            AuctionSim::instance()->GetBuyQueueStatus(GameTime::GetGameTime().count());
 
-        // queue is sorted by buyTime descending: soonest-due at the back
-        time_t now = GameTime::GetGameTime().count();
-        time_t nextBuyIn = queue.back().buyTime - now;
-        time_t lastBuyIn = queue.front().buyTime - now;
-
-        SendMessage(target, Acore::StringFormat("QUEUEINFO\t{}\t{}\t{}", queue.size(), nextBuyIn, lastBuyIn));
+        SendMessage(
+            target,
+            Acore::StringFormat(
+                "{}\t{}\t{}\t{}",
+                Msg::QueueInfo,
+                status.size,
+                status.nextBuyInSeconds,
+                status.lastBuyInSeconds));
     }
 
     // Resolve a character name to its guid + account id (only the server can) and
@@ -337,7 +373,7 @@ namespace
     {
         if (tokens.size() < 2 || tokens[1].empty())
         {
-            SendMessage(target, "SETBOTCHARRESULT\tfail\tno character name given");
+            SendMessage(target, Acore::StringFormat("{}\tfail\tno character name given", Msg::SetBotCharResult));
             return;
         }
 
@@ -345,7 +381,9 @@ namespace
         if (!normalizePlayerName(name))
         {
             SendMessage(
-                target, Acore::StringFormat("SETBOTCHARRESULT\tfail\t'{}' is not a valid character name", name));
+                target,
+                Acore::StringFormat(
+                    "{}\tfail\t'{}' is not a valid character name", Msg::SetBotCharResult, name));
             return;
         }
 
@@ -353,7 +391,8 @@ namespace
         if (!entry)
         {
             SendMessage(
-                target, Acore::StringFormat("SETBOTCHARRESULT\tfail\tno character named '{}' exists", name));
+                target,
+                Acore::StringFormat("{}\tfail\tno character named '{}' exists", Msg::SetBotCharResult, name));
             return;
         }
 
@@ -361,16 +400,17 @@ namespace
         uint32 characterId = entry->Guid.GetCounter();
         uint32 accountId = entry->AccountId;
 
-        std::string filepath = GetConfFilePath();
-        bool wroteChar =
-            ASConfigWriter::SetScalarValue(filepath, "BotCharacterID", Acore::StringFormat("{}", characterId));
-        bool wroteAccount =
-            ASConfigWriter::SetScalarValue(filepath, "BotAccountID", Acore::StringFormat("{}", accountId));
-        if (!wroteChar || !wroteAccount)
+        bool wrote = ASConfigWriter::SetMany(
+            GetConfFilePath(),
+            {{"BotCharacterID", "", Acore::StringFormat("{}", characterId)},
+             {"BotAccountID", "", Acore::StringFormat("{}", accountId)}});
+        if (!wrote)
         {
             SendMessage(
                 target,
-                "SETBOTCHARRESULT\tfail\tfound the character but couldn't write auctionsim.conf, check the server log");
+                Acore::StringFormat(
+                    "{}\tfail\tfound the character but couldn't write auctionsim.conf, check the server log",
+                    Msg::SetBotCharResult));
             return;
         }
 
@@ -393,11 +433,35 @@ namespace
         SendMessage(
             target,
             Acore::StringFormat(
-                "SETBOTCHARRESULT\tok\t{}\t{}\t{}\t{}", name, characterId, accountId, note));
+                "{}\tok\t{}\t{}\t{}\t{}", Msg::SetBotCharResult, name, characterId, accountId, note));
     }
 
     // First request on load. A reply (GM-only) is the client's cue to build the window.
-    void HandleWhoAmI(Player* target) { SendMessage(target, "WHOAMI\tok"); }
+    void HandleWhoAmI(Player* target, std::vector<std::string_view> const&)
+    {
+        SendMessage(target, Acore::StringFormat("{}\tok", Msg::WhoAmI));
+    }
+
+    using CommandHandler = void (*)(Player*, std::vector<std::string_view> const&);
+
+    struct CommandRoute
+    {
+        std::string_view verb;
+        CommandHandler handler;
+    };
+
+    CommandRoute const kCommandRoutes[] = {
+        {Msg::WhoAmI, HandleWhoAmI},
+        {Msg::GetConfig, HandleGetConfig},
+        {Msg::SetConfig, HandleSetConfig},
+        {Msg::SaveConfig, HandleSaveConfig},
+        {Msg::Scan, HandleScan},
+        {Msg::Delete, HandleDelete},
+        {Msg::Test, HandleTest},
+        {Msg::CleanOverCap, HandleCleanOverCap},
+        {Msg::ShowQueue, HandleShowQueue},
+        {Msg::SetBotChar, HandleSetBotChar},
+    };
 
     void HandleRequest(Player* player, std::string const& payload)
     {
@@ -412,51 +476,15 @@ namespace
             return;
         }
 
-        std::string_view command = tokens[0];
-        if (command == "WHOAMI")
+        for (CommandRoute const& route : kCommandRoutes)
         {
-            HandleWhoAmI(player);
+            if (route.verb == tokens[0])
+            {
+                route.handler(player, tokens);
+                return;
+            }
         }
-        else if (command == "GETCONFIG")
-        {
-            HandleGetConfig(player);
-        }
-        else if (command == "SETCONFIG")
-        {
-            HandleSetConfig(player, tokens);
-        }
-        else if (command == "SAVECONFIG")
-        {
-            HandleSaveConfig(player);
-        }
-        else if (command == "SCAN")
-        {
-            HandleScan(player);
-        }
-        else if (command == "DELETE")
-        {
-            HandleDelete(player);
-        }
-        else if (command == "TEST")
-        {
-            HandleTest(player);
-        }
-        else if (command == "CLEANOVERCAP")
-        {
-            HandleCleanOverCap(player);
-        }
-        else if (command == "SHOWQUEUE")
-        {
-            HandleShowQueue(player);
-        }
-        else if (command == "SETBOTCHAR")
-        {
-            HandleSetBotChar(player, tokens);
-        }
-        else
-        {
-            SendError(player, "unknown command");
-        }
+        SendError(player, "unknown command");
     }
 }
 

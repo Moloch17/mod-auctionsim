@@ -1,6 +1,16 @@
 -- /auctionsim slash command. GM-only: non-GMs get no WHOAMI reply, so no window,
 -- and any request they send is dropped server-side anyway.
 
+-- Skip re-fetching the ~120-value config grid if we pulled it this recently.
+local CONFIG_FETCH_TTL = 10
+
+function AHSim.RequestConfig(force)
+    if force or not AHSim.lastConfigFetch or (GetTime() - AHSim.lastConfigFetch) > CONFIG_FETCH_TTL then
+        AHSim:Send(AHSim.OP.GETCONFIG)
+        AHSim.lastConfigFetch = GetTime()
+    end
+end
+
 local function OpenWindow()
     if not AHSim.authorized then
         DEFAULT_CHAT_FRAME:AddMessage("|cffffd100AuctionSim:|r you are not authorized to use the Bot Manager.")
@@ -17,7 +27,7 @@ local function OpenWindow()
 
     AHSimFrame:Show()
     AHSimFrame:Raise()
-    AHSim:Send("GETCONFIG")  -- refresh in case it changed elsewhere
+    AHSim.RequestConfig(false)  -- refresh in case it changed elsewhere (debounced)
 end
 
 local function ToggleWindow()
@@ -32,7 +42,7 @@ SLASH_AUCTIONSIM1 = "/auctionsim"
 SLASH_AUCTIONSIM2 = "/ahsim"
 SlashCmdList["AUCTIONSIM"] = ToggleWindow
 
-AHSim:RegisterHandler("WHOAMI", function(status)
+AHSim:RegisterHandler(AHSim.OP.WHOAMI, function(status)
     if status ~= "ok" then
         return
     end

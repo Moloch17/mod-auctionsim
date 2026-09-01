@@ -1,5 +1,10 @@
 #pragma once
 #include <cstddef>
+#include <cstdint>
+#include <deque>
+#include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 #include "AuctionHouseMgr.h"
 #include "ItemTemplate.h"
@@ -14,23 +19,55 @@ public:
     // auctionsim.dat only ever contains faction values 2 and 6.
     static constexpr size_t kAuctionHouseIndexBound = 7;
 
-    ASConfig(std::string _filepath, bool& _isEnabled);
+    // A category-depth header row is faction:class:quality:snapshotCount followed
+    // by one 12-value StatBlock -- 16 fields.
+    static constexpr size_t kCategoryRowFields = ScannedItem::kIdentityFields + ScannedItem::kStatsPerBlock;
+
+    ASConfig(std::string const& filepath, bool& outLoaded);
 
     // Level caps for newly-listed items; 0 disables the respective check. Read once
     // from AuctionSim.MaxRequiredLevel / AuctionSim.MaxItemLevel at construction.
     uint32 maxRequiredLevel = 0;
     uint32 maxItemLevel = 0;
 
-    // Raw pointers into ScanData. Valid only because ScanData.reserve() is called
-    // before any pointer is taken and ScanData is never resized after construction --
-    // do not push_back/emplace_back into ScanData once this table is built.
+    // ScannedItem storage. A std::deque, not a vector: the ScannedItem* kept in
+    // ItemSelectionTable / ItemIndex must stay valid as rows are appended, and a
+    // deque never relocates existing elements on growth (a vector would).
+    std::deque<ScannedItem> ScanData;
+
+    // [house][class][quality] -> the pool the listing service draws from.
     std::vector<ScannedItem*> ItemSelectionTable[kAuctionHouseIndexBound][MAX_ITEM_CLASS][MAX_ITEM_QUALITY];
+
+    // (house, class, quality, itemID) -> that item's row, so FindScannedItem is
+    // O(1) during a scan instead of a linear bucket walk. First row wins on the
+    // rare duplicate key (suffix is not part of the key, matching the old search).
+    std::unordered_map<uint64_t, ScannedItem const*> ItemIndex;
+
+    // Per-(itemClass, quality) listing multiplier vs. the real market, from the
+    // AuctionSim.<Class>Percent config lines. Plain decimals (1, 1.5, 0.25, 0).
     float ItemSelectionMask[MAX_ITEM_CLASS][MAX_ITEM_QUALITY];
-    std::vector<ScannedItem> ScanData;
+
+    // Observed per-(faction, class, quality) auction-count distribution, from the
+    // category header rows of auctionsim.dat. Drives how full the bot keeps each
+    // category: it only tops a category up while its live auction count is below
+    // q1, and never past a random point in [q1, median].
+    struct CategoryDepth
+    {
+        bool has = false;
+        uint32 q1 = 0;
+        uint32 median = 0;
+        uint32 adjLow = 0;
+        uint32 adjHigh = 0;
+    };
+    CategoryDepth categoryDepth[kAuctionHouseIndexBound][MAX_ITEM_CLASS][MAX_ITEM_QUALITY];
+
+    CategoryDepth const& GetCategoryDepth(AuctionHouseId houseId, uint32 itemClass, uint32 quality) const;
 
     std::vector<ScannedItem*> const& ItemsFor(AuctionHouseId houseId, uint32 itemClass, uint32 quality) const;
 
-    // Linear search within one (houseId, itemClass, quality) bucket for a specific item's price data.
+    // O(1) lookup of a specific item's row within one (houseId, itemClass, quality)
+    // bucket. Returns nullptr if the coordinate is out of range or the item is not
+    // in that bucket.
     ScannedItem const* FindScannedItem(AuctionHouseId houseId, uint32 itemClass, uint32 quality, uint32 itemID) const;
 
     // One (itemClass, quality) mask cell, addressed the same way the addon bridge's wire
@@ -53,5 +90,16 @@ public:
     static std::vector<MaskKeyEntry> const& AllMaskKeys();
 
 private:
+    // Packs a bucket coordinate + itemID into an ItemIndex key.
+    static uint64_t IndexKey(size_t house, uint32 itemClass, uint32 quality, uint32 itemID);
+
+    // Constructor helpers, in call order. The line loaders skip an individual bad
+    // row (logging it) and carry on.
+    static bool ParseHeaderLine(std::string const& line, size_t& outItemRows, size_t& outCategoryRows);
+    void LoadCategoryRow(std::string const& line, std::string const& filepath);
+    void LoadItemRow(std::string const& line, std::string const& filepath);
+    void BuildSelectionTables(std::string const& filepath);
+    void LoadMasks();
+
     void UnpackQualityString(std::string_view qualityString, int itemClass);
 };

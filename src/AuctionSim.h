@@ -26,10 +26,24 @@ public:
     std::vector<AuctionSimTests::TestResult> RunTests();
     std::vector<AuctionBuyingService::QueuedPurchase> const& GetBuyQueue() const { return buyingService->GetQueue(); }
 
+    // Buy-queue summary for the ".auctionsim showqueue" command and the addon's
+    // Show Queue button, so the "soonest-due at the back" ordering lives in one place.
+    struct BuyQueueStatus
+    {
+        size_t size = 0;
+        time_t nextBuyInSeconds = 0;
+        time_t lastBuyInSeconds = 0;
+    };
+    BuyQueueStatus GetBuyQueueStatus(time_t now) const;
+
     // GetBotPlayer() is non-null only while the bot runs. config is loaded at startup
     // regardless of isEnabled, so GetConfig() is null only on a dat parse failure.
     Player* GetBotPlayer() const { return bot ? bot->GetPlayer().get() : nullptr; }
     ASConfig* GetConfig() const { return config.get(); }
+
+    // Low GUID of the bot's character, or 0 when no bot is running. Cheap accessor
+    // for the mail hook -- reads the in-memory id, never re-parses config.
+    uint32 GetBotCharacterLowGuid() const { return bot ? bot->GetCharacterID() : 0; }
 
     // Starts the bot, or swaps it to the character in auctionsim.conf, with no
     // restart. reloadConfig re-reads the .conf first (for values the addon just

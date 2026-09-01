@@ -1,5 +1,7 @@
 #include "AuctionListingService.h"
+#include <algorithm>
 #include <ctime>
+#include <vector>
 #include "ASConfig.h"
 #include "AuctionPricing.h"
 #include "Bot.h"
@@ -9,21 +11,47 @@
 #include "Random.h"
 #include "ScannedItem.h"
 
+namespace
+{
+    // Fill-loop iteration budget: enough attempts to place `toAdd` items even when
+    // weighted picks keep landing on capped/unlistable entries before they're zeroed.
+    constexpr int kFillAttemptsPerItem = 4;
+    constexpr int kFillAttemptsBase = 16;
+
+    // Scale a market figure by a config multiplier, rounding to nearest.
+    int ScaleAndRound(uint32 value, float multiplier)
+    {
+        return static_cast<int>(static_cast<float>(value) * multiplier + 0.5f);
+    }
+}
+
 AuctionListingService::AuctionListingService(Bot& bot, ASConfig const& config) : _bot(bot), _config(config) {}
 
 void AuctionListingService::ListNewAuctions(
-    AuctionHouseId houseId, int const (&existingCounts)[MAX_ITEM_CLASS][MAX_ITEM_QUALITY])
+    AuctionHouseId houseId,
+    int const (&existingCounts)[MAX_ITEM_CLASS][MAX_ITEM_QUALITY],
+    std::unordered_map<uint32, int> const& itemAuctionCount)
 {
     auto trans = CharacterDatabase.BeginTransaction();
+
+    // Auctions this pass has created, so the per-item cap counts them alongside
+    // what was already on the house.
+    std::unordered_map<uint32, int> listedThisScan;
 
     for (uint32 itemClass = 0; itemClass < MAX_ITEM_CLASS; itemClass++)
     {
         for (uint32 quality = 0; quality < MAX_ITEM_QUALITY; quality++)
         {
-            float mask = _config.ItemSelectionMask[itemClass][quality];
-            if (mask == 0.0f)
+            float multiplier = _config.ItemSelectionMask[itemClass][quality];
+            if (multiplier <= 0.0f)
             {
                 continue;
+            }
+
+            ASConfig::CategoryDepth const& depth = _config.GetCategoryDepth(houseId, itemClass, quality);
+            if (!depth.has)
+            {
+                continue;  // never observed this category in the scans -- leave it alone
             }
 
             std::vector<ScannedItem*> const& pool = _config.ItemsFor(houseId, itemClass, quality);
@@ -32,21 +60,85 @@ void AuctionListingService::ListNewAuctions(
                 continue;
             }
 
-            int targetCount = AuctionPricing::CalculateTargetListingCount(mask, pool.size());
-            int itemsToPick = AuctionPricing::CalculateItemsToList(targetCount, existingCounts[itemClass][quality]);
+            int current = existingCounts[itemClass][quality];
 
-            while (itemsToPick > 0)
+            // Gate: only top a category up once it has dropped below its observed
+            // lower quartile. We wait for a real dip rather than nudging toward the
+            // mean every pass.
+            int gate = ScaleAndRound(depth.q1, multiplier);
+            if (current >= gate)
             {
-                ScannedItem const& scan = *pool[urand(0, static_cast<uint32>(pool.size()) - 1)];
+                continue;
+            }
 
-                if (!AuctionPricing::IsListablePrice(scan.GetMarketPrice()))
+            int target = ScaleAndRound(AuctionPricing::RollCategoryTarget(depth.q1, depth.median), multiplier);
+            int toAdd = AuctionPricing::CalculateItemsToList(target, current);
+            if (toAdd <= 0)
+            {
+                continue;
+            }
+
+            // Weight each item by how many concurrent auctions the real market
+            // carries of it; items never seen in a snapshot still get weight 1 so
+            // the category can fill. That same figure is the per-item cap. A weight
+            // is zeroed once its item is capped, unlistable, or can't be created,
+            // and weightTotal is kept in step so WeightedPick never re-sums the pool.
+            std::vector<uint32>& weights = _weightBuffer;
+            weights.resize(pool.size());
+            uint32 weightTotal = 0;
+            for (size_t i = 0; i < pool.size(); ++i)
+            {
+                weights[i] = std::max(1u, pool[i]->GetTypicalListingCount());
+                weightTotal += weights[i];
+            }
+
+            auto dropWeight = [&weights, &weightTotal](size_t at) {
+                weightTotal -= weights[at];
+                weights[at] = 0;
+            };
+
+            int guard = toAdd * kFillAttemptsPerItem + kFillAttemptsBase;
+            while (toAdd > 0 && guard-- > 0)
+            {
+                size_t idx = AuctionPricing::WeightedPick(weights, weightTotal);
+                if (idx >= pool.size())
                 {
-                    itemsToPick--;
+                    break;  // every remaining item is zeroed out
+                }
+
+                ScannedItem const& scan = *pool[idx];
+                uint32 itemId = scan.GetItemID();
+
+                int existingForItem = 0;
+                if (auto it = itemAuctionCount.find(itemId); it != itemAuctionCount.end())
+                {
+                    existingForItem = it->second;
+                }
+                // weights[idx] is still the item's untouched weight -- WeightedPick
+                // only returns non-zero indices and weights are only ever zeroed --
+                // which is exactly max(1, GetTypicalListingCount()), the per-item cap.
+                int itemCap = static_cast<int>(weights[idx]);
+                if (existingForItem + listedThisScan[itemId] >= itemCap)
+                {
+                    dropWeight(idx);
                     continue;
                 }
 
-                ListOneItem(scan, houseId, trans);
-                itemsToPick--;
+                if (!AuctionPricing::IsListablePrice(scan.GetMarketPrice()))
+                {
+                    dropWeight(idx);
+                    continue;
+                }
+
+                if (ListOneItem(scan, houseId, trans))
+                {
+                    listedThisScan[itemId]++;
+                    toAdd--;
+                }
+                else
+                {
+                    dropWeight(idx);  // level cap / missing template -- don't retry it
+                }
             }
         }
     }
@@ -94,7 +186,7 @@ AuctionEntry* AuctionListingService::ListOneItem(
     // round-trip correctly through the bit-preserving uint32<->int32 conversion.
     Item* item =
         Item::CreateItem(scan.GetItemID(), quantity, nullptr, false, static_cast<uint32>(scan.GetSuffixID()));
-    item->SetOwnerGUID(_bot.GetPlayer().get()->GetGUID());
+    item->SetOwnerGUID(_bot.GetPlayerRef().GetGUID());
 
     AuctionEntry* auction = new AuctionEntry();
     auction->Id = sObjectMgr->GenerateAuctionID();
@@ -102,7 +194,7 @@ AuctionEntry* AuctionListingService::ListOneItem(
     auction->item_guid = item->GetGUID();
     auction->item_template = item->GetEntry();
     auction->itemCount = quantity;
-    auction->owner = _bot.GetPlayer().get()->GetGUID();
+    auction->owner = _bot.GetPlayerRef().GetGUID();
     auction->startbid = buyout;
     auction->buyout = buyout;
     auction->bid = 0;

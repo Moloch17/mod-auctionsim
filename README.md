@@ -6,7 +6,7 @@ AuctionSim populates and maintains your realm's auction house using price data s
 
 Every hour (fixed, not configurable), AuctionSim scans both auction houses:
 
-- **Listing**: for each item class/quality bucket, it lists new items up to the percentage targets set in the config, picking a random quantity and a buyout price rolled around the item's known mean price.
+- **Listing**: it keeps each item class/quality bucket about as full as a real auction house was observed to be in the scan data -- topping a bucket up only once it drops below the observed lower quartile, and choosing which items fill it weighted by how often each was really listed. A per-bucket multiplier in the config scales that target up or down. New listings get a random quantity and a buyout price rolled around the item's known mean price.
 - **Buying**: for each auction it doesn't already own, if the price is at or under the item's known mean, it's always queued to buy. If the price is above mean but still under the item's known maximum, it's queued with some probability (randomized each scan, to mimic natural demand variance between real players) rather than always or never. Queued purchases execute within 45 minutes of being queued.
 - Optional `MaxRequiredLevel`/`MaxItemLevel` caps stop it from listing gear above your realm's level, for progression servers running below the max level.
 
@@ -68,13 +68,16 @@ that file by hand.
 
 4. Choose what the bot lists
 ----------------------------
-In the "Listing Settings" grid on the right:
+In the "Listing Multipliers" grid on the right:
 
 - Max Required Level / Max Item Level: the bot skips items above these. 0 means
   no limit.
-- The grid is the percentage of scanned items in each category and quality that
-  the bot will list. Enter a plain number: 50 means 50%. Over 100 lets it list
-  duplicates. 0 disables that cell.
+- The bot works out how full to keep each category and quality from real auction
+  scan data. Each grid cell scales that target: 1 matches the real market, 1.5
+  keeps it 50% fuller, 0.5 half as full, 0 disables that cell. Enter a plain
+  number like 1, 1.5 or 0.25.
+- The scan data was taken from a realm with a saturated auction house, so the
+  default values are scaled down.
 - When editing a cell you must press enter to apply the change.
 - Click "Apply" to send your changes, then "Save To File" to write them to
   auctionsim.conf.

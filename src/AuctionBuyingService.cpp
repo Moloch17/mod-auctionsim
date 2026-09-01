@@ -67,7 +67,7 @@ void AuctionBuyingService::BuyItem(AuctionEntry* auction, AuctionHouseId houseId
 {
     auto trans = CharacterDatabase.BeginTransaction();
 
-    auction->bidder = _bot.GetPlayer().get()->GetGUID();
+    auction->bidder = _bot.GetPlayerRef().GetGUID();
     auction->bid = auction->buyout;
     sAuctionMgr->SendAuctionSuccessfulMail(auction, trans);
     auction->DeleteFromDB(trans);

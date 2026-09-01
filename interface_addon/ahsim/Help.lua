@@ -44,13 +44,16 @@ that file by hand.
 
 4. Choose what the bot lists
 ----------------------------
-In the "Listing Settings" grid on the right:
+In the "Listing Multipliers" grid on the right:
 
 - Max Required Level / Max Item Level: the bot skips items above these. 0 means
   no limit.
-- The grid is the percentage of scanned items in each category and quality that
-  the bot will list. Enter a plain number: 50 means 50%. Over 100 lets it list
-  duplicates. 0 disables that cell.
+- The bot works out how full to keep each category and quality from real auction
+  scan data. Each grid cell scales that target: 1 matches the real market, 1.5
+  keeps it 50% fuller, 0.5 half as full, 0 disables that cell. Enter a plain
+  number like 1, 1.5 or 0.25.
+- The scan data was taken from a realm with a saturated auction house, so the
+  default values are scaled down.
 - When editing a cell you must press enter to apply the change.
 - Click "Apply" to send your changes, then "Save To File" to write them to
   auctionsim.conf.

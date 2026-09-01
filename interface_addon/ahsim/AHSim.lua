@@ -1,31 +1,66 @@
 -- Talks to the AuctionSim server module. Every message, both ways, is
 -- "MSGTYPE\tfield\tfield...". Client -> server goes out as a self-whisper.
--- AuctionSimAddonBridge.cpp has the message list.
+-- AHSim.OP below mirrors the Msg namespace in AuctionSimAddonBridge.cpp.
+
+local tconcat = table.concat
+local sfind = string.find
+local ssub = string.sub
 
 AHSim = AHSim or {}
 AHSim.PREFIX = "AHSIM"
 AHSim.authorized = false
 AHSim.handlers = {}
+AHSim.playerName = nil  -- cached at PLAYER_LOGIN; the self-whisper target
+
+-- The one place message-type strings live on the client. Values equal keys and
+-- must match AuctionSimAddonBridge.cpp's Msg namespace.
+AHSim.OP = {
+    -- client -> server
+    WHOAMI = "WHOAMI",
+    GETCONFIG = "GETCONFIG",
+    SETCONFIG = "SETCONFIG",
+    SAVECONFIG = "SAVECONFIG",
+    SCAN = "SCAN",
+    DELETE = "DELETE",
+    TEST = "TEST",
+    CLEANOVERCAP = "CLEANOVERCAP",
+    SHOWQUEUE = "SHOWQUEUE",
+    SETBOTCHAR = "SETBOTCHAR",
+    -- server -> client
+    ERROR = "ERROR",
+    CONFIG = "CONFIG",
+    CONFIGSAVED = "CONFIGSAVED",
+    SCANRESULT = "SCANRESULT",
+    DELETERESULT = "DELETERESULT",
+    TESTRESULT = "TESTRESULT",
+    TESTDONE = "TESTDONE",
+    QUEUEINFO = "QUEUEINFO",
+    CLEANRESULT = "CLEANRESULT",
+    SETBOTCHARRESULT = "SETBOTCHARRESULT",
+}
 
 function AHSim:RegisterHandler(msgType, fn)
     self.handlers[msgType] = fn
 end
 
 function AHSim:Send(...)
-    local payload = table.concat({...}, "\t")
-    SendAddonMessage(self.PREFIX, payload, "WHISPER", UnitName("player"))
+    local target = self.playerName or UnitName("player")
+    SendAddonMessage(self.PREFIX, tconcat({...}, "\t"), "WHISPER", target)
 end
 
 local function SplitTabs(str)
     local result = {}
+    local count = 0
     local from = 1
     while true do
-        local tabPos = string.find(str, "\t", from, true)
+        local tabPos = sfind(str, "\t", from, true)
         if not tabPos then
-            table.insert(result, string.sub(str, from))
+            count = count + 1
+            result[count] = ssub(str, from)
             break
         end
-        table.insert(result, string.sub(str, from, tabPos - 1))
+        count = count + 1
+        result[count] = ssub(str, from, tabPos - 1)
         from = tabPos + 1
     end
     return result
@@ -49,10 +84,11 @@ eventFrame:RegisterEvent("PLAYER_LOGIN")
 eventFrame:RegisterEvent("CHAT_MSG_ADDON")
 eventFrame:SetScript("OnEvent", function(self, event, ...)
     if event == "PLAYER_LOGIN" then
+        AHSim.playerName = UnitName("player")
         -- server only answers WHOAMI for GMs; the reply gates window creation
-        AHSim:Send("WHOAMI")
+        AHSim:Send(AHSim.OP.WHOAMI)
     elseif event == "CHAT_MSG_ADDON" then
-        local prefix, message, channel, sender = ...
+        local prefix, message = ...
         if prefix == AHSim.PREFIX then
             AHSim:Dispatch(message)
         end
