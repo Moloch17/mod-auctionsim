@@ -8,6 +8,7 @@
 #include <string_view>
 #include "ASParse.h"
 #include "Config.h"
+#include "DatabaseEnv.h"
 #include "ObjectMgr.h"
 #include "ScannedItem.h"
 #include "Tokenize.h"
@@ -61,6 +62,10 @@ ASConfig::ASConfig(std::string const& filepath, bool& outLoaded)
 {
     this->maxRequiredLevel = sConfigMgr->GetOption<uint32>("AuctionSim.MaxRequiredLevel", 0);
     this->maxItemLevel = sConfigMgr->GetOption<uint32>("AuctionSim.MaxItemLevel", 0);
+
+    // Independent of auctionsim.dat -- load it even on the early-return paths below so
+    // the buy-side guard always has its whitelist.
+    LoadVendorItems();
 
     if (!std::filesystem::exists(filepath))
     {
@@ -232,6 +237,25 @@ void ASConfig::LoadMasks()
     {
         UnpackQualityString(sConfigMgr->GetOption<std::string>(entry.configKey, ""), entry.itemClass);
     }
+}
+
+// Every item id stocked by a vendor. Negative npc_vendor.item rows are references
+// to other npc_vendor rows, whose own positive item ids this DISTINCT scan already
+// covers, so one query is enough.
+void ASConfig::LoadVendorItems()
+{
+    QueryResult result = WorldDatabase.Query("SELECT DISTINCT item FROM npc_vendor WHERE item > 0");
+    if (!result)
+    {
+        return;
+    }
+
+    do
+    {
+        vendorSoldItems.insert((*result)[0].Get<uint32>());
+    } while (result->NextRow());
+
+    LOG_INFO("module", "AuctionSim: {} distinct vendor-sold items loaded", vendorSoldItems.size());
 }
 
 uint64_t ASConfig::IndexKey(size_t house, uint32 itemClass, uint32 quality, uint32 itemID)

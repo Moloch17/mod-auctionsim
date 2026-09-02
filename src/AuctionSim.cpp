@@ -251,11 +251,17 @@ void AuctionSim::ScanAuctions(AuctionHouseId _AuctionHouseId)
 
         uint32 pricePerItem = auction->buyout / auction->itemCount;
 
-        // Never buy grey items, and never pay more per unit than a vendor would give
-        // the player for the item -- both are gold-cheese vectors. Grey auctions are
-        // still counted above so the listing side is unaffected.
+        // Never buy grey items, and never pay more per unit than it would cost to buy
+        // the item straight from a vendor -- both are gold-cheese vectors. The vendor
+        // cap only applies when a vendor actually stocks the item (npc_vendor): a
+        // BuyPrice left on an item no vendor sells is stale DB data, not a real floor,
+        // so those pass the check (0 disables it). Grey auctions are still counted
+        // above so the listing side is unaffected.
+        uint32 vendorBuyPrice = (config->IsVendorSold(auction->item_template) && proto->BuyPrice > 0)
+            ? static_cast<uint32>(proto->BuyPrice)
+            : 0;
         if (!AuctionPricing::IsBuyableQuality(proto->Quality) ||
-            !AuctionPricing::IsWithinVendorValue(pricePerItem, proto->SellPrice))
+            !AuctionPricing::IsWithinVendorBuyPrice(pricePerItem, vendorBuyPrice))
         {
             continue;
         }

@@ -80,12 +80,12 @@ namespace AuctionPricing
     // that particular check is disabled.
     bool IsWithinLevelCap(uint32 itemRequiredLevel, uint32 itemLevel, uint32 maxRequiredLevel, uint32 maxItemLevel);
 
-    // Buy-side anti-cheese guard: players can acquire vendor-stocked goods (or vendor
-    // trash) cheaply and relist them, so the bot must never pay more per unit than a
-    // vendor would give the player for the same item (ItemTemplate::SellPrice, the
-    // merchant sell value). Equal price still buys; vendorSellPrice == 0 (no vendor
-    // value) disables the check.
-    bool IsWithinVendorValue(uint32 pricePerItem, uint32 vendorSellPrice);
+    // Buy-side anti-cheese guard: players can acquire vendor-stocked goods cheaply
+    // and relist them, so the bot must never pay more per unit than it would cost to
+    // buy the same item straight from a vendor (ItemTemplate::BuyPrice, the merchant
+    // purchase price). Equal price still buys; vendorBuyPrice == 0 (item has no
+    // vendor purchase price -- e.g. a world drop or enchant) disables the check.
+    bool IsWithinVendorBuyPrice(uint32 pricePerItem, uint32 vendorBuyPrice);
 
     // Buy-side quality gate: the bot never buys poor-quality (grey) items --
     // ITEM_QUALITY_POOR == 0 -- since they are vendor trash and only surface on the

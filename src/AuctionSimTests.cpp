@@ -461,25 +461,25 @@ namespace
         return Pass("IsWithinLevelCap boundary");
     }
 
-    TestResult TestIsWithinVendorValueBoundary()
+    TestResult TestIsWithinVendorBuyPriceBoundary()
     {
-        if (!AuctionPricing::IsWithinVendorValue(1'000'000, 0))
+        if (!AuctionPricing::IsWithinVendorBuyPrice(1'000'000, 0))
         {
-            return Fail("IsWithinVendorValue boundary", "sellPrice 0 (no vendor value) rejected a buy");
+            return Fail("IsWithinVendorBuyPrice boundary", "buyPrice 0 (no vendor purchase price) rejected a buy");
         }
-        if (!AuctionPricing::IsWithinVendorValue(500, 500))
+        if (!AuctionPricing::IsWithinVendorBuyPrice(500, 500))
         {
-            return Fail("IsWithinVendorValue boundary", "price equal to the vendor sell price was rejected");
+            return Fail("IsWithinVendorBuyPrice boundary", "price equal to the vendor buy price was rejected");
         }
-        if (!AuctionPricing::IsWithinVendorValue(499, 500))
+        if (!AuctionPricing::IsWithinVendorBuyPrice(499, 500))
         {
-            return Fail("IsWithinVendorValue boundary", "price below the vendor sell price was rejected");
+            return Fail("IsWithinVendorBuyPrice boundary", "price below the vendor buy price was rejected");
         }
-        if (AuctionPricing::IsWithinVendorValue(501, 500))
+        if (AuctionPricing::IsWithinVendorBuyPrice(501, 500))
         {
-            return Fail("IsWithinVendorValue boundary", "price above the vendor sell price was accepted");
+            return Fail("IsWithinVendorBuyPrice boundary", "price above the vendor buy price was accepted");
         }
-        return Pass("IsWithinVendorValue boundary");
+        return Pass("IsWithinVendorBuyPrice boundary");
     }
 
     TestResult TestIsBuyableQuality()
@@ -654,7 +654,7 @@ namespace AuctionSimTests
             TestListingCountMath(),
             TestWeightedPick(),
             TestIsWithinLevelCapBoundary(),
-            TestIsWithinVendorValueBoundary(),
+            TestIsWithinVendorBuyPriceBoundary(),
             TestIsBuyableQuality(),
             TestBuyQueuePopulatesOnQualifyingPrice(bot),
             TestBuyQueueDedupesRescan(bot),

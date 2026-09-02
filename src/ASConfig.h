@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include "AuctionHouseMgr.h"
 #include "ItemTemplate.h"
@@ -29,6 +30,13 @@ public:
     // from AuctionSim.MaxRequiredLevel / AuctionSim.MaxItemLevel at construction.
     uint32 maxRequiredLevel = 0;
     uint32 maxItemLevel = 0;
+
+    // Every item id stocked by at least one vendor (from npc_vendor). The buy-side
+    // vendor-buy-price guard only applies to items in this set: an
+    // ItemTemplate::BuyPrice left on an item that no vendor actually sells is stale
+    // DB data and must not block an otherwise-good purchase.
+    std::unordered_set<uint32> vendorSoldItems;
+    bool IsVendorSold(uint32 itemId) const { return vendorSoldItems.count(itemId) > 0; }
 
     // ScannedItem storage. A std::deque, not a vector: the ScannedItem* kept in
     // ItemSelectionTable / ItemIndex must stay valid as rows are appended, and a
@@ -100,6 +108,7 @@ private:
     void LoadItemRow(std::string const& line, std::string const& filepath);
     void BuildSelectionTables(std::string const& filepath);
     void LoadMasks();
+    void LoadVendorItems();
 
     void UnpackQualityString(std::string_view qualityString, int itemClass);
 };

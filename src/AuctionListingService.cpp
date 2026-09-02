@@ -79,16 +79,22 @@ void AuctionListingService::ListNewAuctions(
             }
 
             // Weight each item by how many concurrent auctions the real market
-            // carries of it; items never seen in a snapshot still get weight 1 so
-            // the category can fill. That same figure is the per-item cap. A weight
-            // is zeroed once its item is capped, unlistable, or can't be created,
-            // and weightTotal is kept in step so WeightedPick never re-sums the pool.
+            // carries of it, scaled by the same category multiplier; items never
+            // seen in a snapshot still get weight 1 so the category can fill. That
+            // scaled figure is also the per-item cap: without the scaling a
+            // multiplier above 1 would raise the category target but still allow only
+            // one-per-item (real-market typical count is 1 for most items), so the
+            // category could never actually reach the target. Scaling every weight by
+            // the same factor leaves the selection distribution unchanged. A weight
+            // is zeroed once its item is capped, unlistable, or can't be created, and
+            // weightTotal is kept in step so WeightedPick never re-sums the pool.
             std::vector<uint32>& weights = _weightBuffer;
             weights.resize(pool.size());
             uint32 weightTotal = 0;
             for (size_t i = 0; i < pool.size(); ++i)
             {
-                weights[i] = std::max(1u, pool[i]->GetTypicalListingCount());
+                int scaledCap = ScaleAndRound(std::max(1u, pool[i]->GetTypicalListingCount()), multiplier);
+                weights[i] = static_cast<uint32>(std::max(1, scaledCap));
                 weightTotal += weights[i];
             }
 
@@ -116,7 +122,8 @@ void AuctionListingService::ListNewAuctions(
                 }
                 // weights[idx] is still the item's untouched weight -- WeightedPick
                 // only returns non-zero indices and weights are only ever zeroed --
-                // which is exactly max(1, GetTypicalListingCount()), the per-item cap.
+                // which is exactly the multiplier-scaled max(1, GetTypicalListingCount()),
+                // the per-item cap.
                 int itemCap = static_cast<int>(weights[idx]);
                 if (existingForItem + listedThisScan[itemId] >= itemCap)
                 {
