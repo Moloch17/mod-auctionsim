@@ -10,6 +10,7 @@
 #include "Config.h"
 #include "DatabaseEnv.h"
 #include "ObjectMgr.h"
+#include "QueryResult.h"
 #include "ScannedItem.h"
 #include "Tokenize.h"
 
@@ -252,7 +253,7 @@ void ASConfig::LoadVendorItems()
 
     do
     {
-        vendorSoldItems.insert((*result)[0].Get<uint32>());
+        vendorSoldItems.insert(result->Fetch()[0].Get<uint32>());
     } while (result->NextRow());
 
     LOG_INFO("module", "AuctionSim: {} distinct vendor-sold items loaded", vendorSoldItems.size());
