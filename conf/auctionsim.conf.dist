@@ -35,20 +35,20 @@ AuctionSim.MaxItemLevel = 0
 #
 # The Warmane - Lordaeron realm has a hugely saturated auction house so the values
 # were uniformly scaled down to a more reasonable level.
-AuctionSim.ConsumablePercent    = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
-AuctionSim.ContainerPercent     = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
-AuctionSim.WeaponPercent        = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
-AuctionSim.GemPercent           = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
-AuctionSim.ArmorPercent         = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
-AuctionSim.ReagentPercent       = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
-AuctionSim.ProjectilePercent    = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
-AuctionSim.TradeGoodsPercent    = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
-AuctionSim.GenericPercent       = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
-AuctionSim.RecipePercent        = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
-AuctionSim.MoneyPercent         = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
-AuctionSim.QuiverPercent        = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
-AuctionSim.QuestPercent         = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
-AuctionSim.KeyPercent           = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
-AuctionSim.PermanentPercent     = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
-AuctionSim.MiscPercent          = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
-AuctionSim.GlyphPercent         = GREY: 0.05, WHITE: 0.05, GREEN: 0.05, BLUE: 0.05, PURPLE: 0.05, ORANGE: 0.05, YELLOW: 0.05
+AuctionSim.ConsumablePercent    = GREY: 0.1, WHITE: 0.1, GREEN: 0.1, BLUE: 0.1, PURPLE: 0.1, ORANGE: 0.1, YELLOW: 0.1
+AuctionSim.ContainerPercent     = GREY: 0.1, WHITE: 0.1, GREEN: 0.1, BLUE: 0.1, PURPLE: 0.1, ORANGE: 0.1, YELLOW: 0.1
+AuctionSim.WeaponPercent        = GREY: 0.1, WHITE: 0.1, GREEN: 0.1, BLUE: 0.1, PURPLE: 0.1, ORANGE: 0.1, YELLOW: 0.1
+AuctionSim.GemPercent           = GREY: 0.1, WHITE: 0.1, GREEN: 0.1, BLUE: 0.1, PURPLE: 0.1, ORANGE: 0.1, YELLOW: 0.1
+AuctionSim.ArmorPercent         = GREY: 0.1, WHITE: 0.1, GREEN: 0.1, BLUE: 0.1, PURPLE: 0.1, ORANGE: 0.1, YELLOW: 0.1
+AuctionSim.ReagentPercent       = GREY: 0.1, WHITE: 0.1, GREEN: 0.1, BLUE: 0.1, PURPLE: 0.1, ORANGE: 0.1, YELLOW: 0.1
+AuctionSim.ProjectilePercent    = GREY: 0.1, WHITE: 0.1, GREEN: 0.1, BLUE: 0.1, PURPLE: 0.1, ORANGE: 0.1, YELLOW: 0.1
+AuctionSim.TradeGoodsPercent    = GREY: 0.1, WHITE: 0.1, GREEN: 0.1, BLUE: 0.1, PURPLE: 0.1, ORANGE: 0.1, YELLOW: 0.1
+AuctionSim.GenericPercent       = GREY: 0.1, WHITE: 0.1, GREEN: 0.1, BLUE: 0.1, PURPLE: 0.1, ORANGE: 0.1, YELLOW: 0.1
+AuctionSim.RecipePercent        = GREY: 0.1, WHITE: 0.1, GREEN: 0.1, BLUE: 0.1, PURPLE: 0.1, ORANGE: 0.1, YELLOW: 0.1
+AuctionSim.MoneyPercent         = GREY: 0.1, WHITE: 0.1, GREEN: 0.1, BLUE: 0.1, PURPLE: 0.1, ORANGE: 0.1, YELLOW: 0.1
+AuctionSim.QuiverPercent        = GREY: 0.1, WHITE: 0.1, GREEN: 0.1, BLUE: 0.1, PURPLE: 0.1, ORANGE: 0.1, YELLOW: 0.1
+AuctionSim.QuestPercent         = GREY: 0.1, WHITE: 0.1, GREEN: 0.1, BLUE: 0.1, PURPLE: 0.1, ORANGE: 0.1, YELLOW: 0.1
+AuctionSim.KeyPercent           = GREY: 0.1, WHITE: 0.1, GREEN: 0.1, BLUE: 0.1, PURPLE: 0.1, ORANGE: 0.1, YELLOW: 0.1
+AuctionSim.PermanentPercent     = GREY: 0.1, WHITE: 0.1, GREEN: 0.1, BLUE: 0.1, PURPLE: 0.1, ORANGE: 0.1, YELLOW: 0.1
+AuctionSim.MiscPercent          = GREY: 0.1, WHITE: 0.1, GREEN: 0.1, BLUE: 0.1, PURPLE: 0.1, ORANGE: 0.1, YELLOW: 0.1
+AuctionSim.GlyphPercent         = GREY: 0.1, WHITE: 0.1, GREEN: 0.1, BLUE: 0.1, PURPLE: 0.1, ORANGE: 0.1, YELLOW: 0.1
