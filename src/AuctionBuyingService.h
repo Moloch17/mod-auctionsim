@@ -16,7 +16,8 @@ class AuctionBuyingService
 public:
     struct QueuedPurchase
     {
-        AuctionEntry* auction;
+        uint32 auctionId;
+        AuctionHouseId houseId;
         time_t buyTime;
     };
 

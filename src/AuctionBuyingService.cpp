@@ -27,7 +27,7 @@ void AuctionBuyingService::ConsiderForPurchase(
     }
 
     time_t buyTime = AuctionPricing::RollBuyTime(auction->expire_time, now);
-    _queue.push_back({auction, buyTime});
+    _queue.push_back({auction->Id, auction->GetHouseId(), buyTime});
     _queuedAuctionIds.insert(auction->Id);
 }
 
@@ -53,13 +53,26 @@ void AuctionBuyingService::ProcessDueQueue()
     }
 
     _queue.pop_back();
-    _queuedAuctionIds.erase(next.auction->Id);
-    BuyItem(next.auction, next.auction->houseId);
+    _queuedAuctionIds.erase(next.auctionId);
+
+    AuctionHouseObject* house = sAuctionMgr->GetAuctionsMapByHouseId(next.houseId);
+    if (!house)
+    {
+        return;
+    }
+
+    AuctionEntry* auction = house->GetAuction(next.auctionId);
+    if (!auction)
+    {
+        return;
+    }
+
+    BuyItem(auction, next.houseId);
 }
 
 void AuctionBuyingService::EnqueueForTest(AuctionEntry* auction, time_t buyTime)
 {
-    _queue.push_back({auction, buyTime});
+    _queue.push_back({auction->Id, auction->GetHouseId(), buyTime});
     _queuedAuctionIds.insert(auction->Id);
 }
 
