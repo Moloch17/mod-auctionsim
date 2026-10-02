@@ -367,13 +367,13 @@ void AuctionSimMailManager::OnBeforeMailDraftSendMailTo(
     bool& deleteMailItemsFromDB,
     bool& sendMail)
 {
-    if (IsBotCharacter(receiver.GetPlayerGUIDLow()))
+    // Only drop the auction house's mail to the bot (sale proceeds, expired listings).
+    // Anything else -- a GM's or another player's mail -- is delivered as usual, rather
+    // than suppressed with its items left behind in item_instance.
+    if (sender.GetMailMessageType() == MAIL_AUCTION && IsBotCharacter(receiver.GetPlayerGUIDLow()))
     {
         sendMail = false;
-        if (sender.GetMailMessageType() == MAIL_AUCTION)
-        {
-            deleteMailItemsFromDB = true;
-        }
+        deleteMailItemsFromDB = true;
     }
 }
 
