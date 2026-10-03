@@ -1986,18 +1986,21 @@ namespace
         std::string const name = "Market fill";
         Market::Data data;
         std::string error;
-        if (!ParseFixture(SyntheticMarket(600, 3000, 50, 11), data, error))
+        // Thick items (tens of listings each) at a moderate size: the whole test is about
+        // 0.3 s at -O2 on the world thread.
+        if (!ParseFixture(SyntheticMarket(300, 1500, 50, 11), data, error))
         {
             return Fail(name, Acore::StringFormat("synthetic market refused: {}", error));
         }
-        double const scale = 1.0;
+        double const scale = 0.5;
         data.SetRates(scale, 0.5);
         Market::Faction const& fac = data.factions[0];
         uint64 const now = 1783296000ULL + 21 * 86400;
         Market::Rng rng(31);
 
-        // Steady state: 10 days from empty.
-        std::vector<Market::Listing> steady = LongRun(fac, 50, scale, 240, now, rng);
+        // Steady state: 4 days from empty (twice the longest duration).
+        auto testStart = std::chrono::steady_clock::now();
+        std::vector<Market::Listing> steady = LongRun(fac, 50, scale, 96, now, rng);
         long long micros = 0;
         std::vector<Market::Listing> fromEmpty = RunFill(fac, {}, 50, scale, now, rng, &micros);
         std::vector<Market::Listing> onFull = RunFill(fac, steady, 50, scale, now, rng);
@@ -2018,7 +2021,7 @@ namespace
         double const topUp = static_cast<double>(onFull.size()) / std::max(1.0, steadyCount);
         std::string detail = Acore::StringFormat(
             "long run {} listings / {} items; fill from empty {} / {} ({:.0f}% / {:.0f}%) in {} us; "
-            "fill on the full house adds {} ({:.0f}%)",
+            "fill on the full house adds {} ({:.0f}%); test {} ms",
             steady.size(),
             ItemsUp(steady),
             fromEmpty.size(),
@@ -2027,7 +2030,9 @@ namespace
             itemsRatio * 100.0,
             micros,
             onFull.size(),
-            topUp * 100.0);
+            topUp * 100.0,
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - testStart)
+                .count());
         if (std::fabs(countRatio - 1.0) > 0.15 || std::fabs(itemsRatio - 1.0) > 0.15)
         {
             return Fail(name, detail);
