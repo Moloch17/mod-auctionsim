@@ -29,6 +29,8 @@ FEATURES = ["log_units", "min_med", "d_price", "d_units", "price_ref"]
 
 
 def features(df):
+    df = df.select(pl.col("item").cast(pl.Int64), pl.col("day").cast(pl.Int64),
+                   *[pl.col(c).cast(pl.Float64) for c in ("units", "min_unit", "med_unit")])
     return (df.sort("item", "day")
             .with_columns(log_units=pl.col("units").log1p(), min_med=pl.col("min_unit") / pl.col("med_unit"),
                           d_price=(pl.col("med_unit").log() - pl.col("med_unit").log().shift(1)).over("item").abs(),
