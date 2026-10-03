@@ -17,10 +17,18 @@ Every page is saved as it came, gzipped, so all the site shows is kept:
 
 Item ids are the listing's plus every id in auctionsim.dat; ids the site
 doesn't know come back as "Item not found" and are saved as such. The run is
-resumable: pages already on disk are skipped (--refresh fetches them again).
+resumable: pages already on disk are skipped.
+
+Item pages keep every 6-hourly snapshot for about the last 30 days and thin
+older ones (about one a day, one every two days past a year), so a later pass
+must not overwrite an earlier one. --refresh saves a new copy of every page to
+raw/<faction>/refresh-<UTC date>/{list,items}/, resumable the same way; it
+also covers every id an earlier pass saved. Run one at least monthly to keep
+the full 6-hourly history.
 
   ./scrape.py                 # both factions
   ./scrape.py --faction horde
+  ./scrape.py --refresh       # dated copy of every page
 
 Load: --workers connections (default 2) with no added delay, i.e. about as
 fast as the site answers two people browsing. Any 429/5xx pauses every
@@ -105,11 +113,14 @@ def dat_item_ids(name):
 def scrape(client, pool, name, refresh):
     faction = FACTIONS[name]
     out = RAW / name
+    known = {int(p.name.split(".")[0]) for p in out.glob("items/*.html.gz")}
+    if refresh:
+        out = out / f"refresh-{refresh}"
 
     # Listing pages; page 1 says how many there are.
     def list_page(page):
         path = out / "list" / f"{page}.html.gz"
-        if path.exists() and not refresh:
+        if path.exists():
             return gzip.decompress(path.read_bytes())
         html = client.get("/realm/base", {"id": REALM, "faction": faction, "sort": "itemid",
                                           "page": page, "per-page": PER_PAGE})
@@ -122,10 +133,10 @@ def scrape(client, pool, name, refresh):
     for html in pool.map(list_page, range(2, pages + 1)):
         ids.update(map(int, ITEM_LINK_RE.findall(html.decode())))
     listed = len(ids)
-    ids |= dat_item_ids(name)
+    ids |= dat_item_ids(name) | known
     print(f"{name}: {pages} listing pages, {listed} items listed, {len(ids)} ids with auctionsim.dat")
 
-    todo = [i for i in sorted(ids) if refresh or not (out / "items" / f"{i}.html.gz").exists()]
+    todo = [i for i in sorted(ids) if not (out / "items" / f"{i}.html.gz").exists()]
     counts = {"done": 0, "found": 0}
     start = time.time()
 
@@ -148,13 +159,15 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--faction", choices=list(FACTIONS), help="one faction only (default both)")
     ap.add_argument("--workers", type=int, default=2, help="concurrent connections (default 2)")
-    ap.add_argument("--refresh", action="store_true", help="fetch pages already on disk again")
+    ap.add_argument("--refresh", action="store_true",
+                    help="save a dated copy of every page under raw/<faction>/refresh-<UTC date>/")
     args = ap.parse_args()
+    refresh = time.strftime("%Y-%m-%d", time.gmtime()) if args.refresh else None
     client = Client()
     with ThreadPoolExecutor(args.workers) as pool:
         for name in FACTIONS:
             if not args.faction or name == args.faction:
-                scrape(client, pool, name, args.refresh)
+                scrape(client, pool, name, refresh)
 
 
 if __name__ == "__main__":
