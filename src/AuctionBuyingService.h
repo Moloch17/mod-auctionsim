@@ -85,6 +85,10 @@ public:
     // runqueue" command / the addon's "Run Queue" button.
     size_t DrainQueue();
 
+    // Drops every queued action without running it; returns how many. For a market
+    // purge, which must leave nothing behind that could buy afterwards.
+    size_t ClearQueue();
+
     size_t QueueSize() const { return _queue.size(); }
 
     // True while this auction waits in the queue (as a buyout or a bid).

@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 #include "ASConfig.h"
 #include "AuctionBuyingService.h"
@@ -91,6 +92,32 @@ public:
     // (".auctionsim market reload"). False, with the reason in `note`, on failure.
     bool ReloadMarket(std::string& note);
 
+    // ".auctionsim market purge [confirm]". Without confirm, only reports. With it:
+    // stops the market (until restart / reload), removes every seller auction
+    // (refunding any bidder through the core's cancel mail), then deletes the seller
+    // characters and accounts through AccountMgr::DeleteAccount. Refuses the whole
+    // purge if a seller account holds anything the module didn't create.
+    struct PurgeReport
+    {
+        bool refused = false;
+        bool done = false;
+        uint32 accounts = 0;
+        uint32 characters = 0;
+        uint32 auctions = 0;
+        uint32 auctionsWithBids = 0;
+        uint32 mails = 0;
+        uint32 queuedDropped = 0;
+        std::vector<std::string> problems;
+    };
+    PurgeReport PurgeMarket(bool confirm);
+    // The GM-facing text of a purge, shared by the chat command and the addon.
+    static std::vector<std::string> DescribePurge(PurgeReport const& report, bool confirm, bool marketMode);
+
+    // ".auctionsim market fill [alliance|horde]": starts a fill of one or both houses.
+    // Returns the lines to show; `ok` false when nothing was started.
+    std::vector<std::string> FillMarket(std::string_view which, bool& ok);
+    bool IsMarketPurged() const { return _marketPurged; }
+
     // Starts the bot, or swaps it to the character in auctionsim.conf, with no
     // restart. reloadConfig re-reads the .conf first (for values the addon just
     // wrote). Returns false, leaving any running bot untouched, if config won't load
@@ -133,6 +160,7 @@ private:
     uint32 _dataHaveVer = 0;
     uint32 _dataNeedVer = 0;
     bool _marketUnavailable = false;
+    bool _marketPurged = false;  // stopped by a purge until restart / reload
     uint32 _marketHaveVer = 0;
     std::string _marketError;
 };

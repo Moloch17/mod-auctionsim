@@ -92,6 +92,16 @@ worldserver after ticking or unticking it.
   the last step's numbers and what is still waiting to post.
 - If auctionsim_market.dat is missing or out of date the module refuses to run
   and tells GMs at login; untick Market Mode to go back to Replay.
+- "Market Fill" (or ".auctionsim market fill [alliance|horde]") fills the
+  house at once, as if the sellers had been running for the last 48 hours,
+  instead of waiting a day or two. Auctions appear at up to 100 per server tick;
+  ".auctionsim market status" shows the progress.
+- "Market Purge" (or ".auctionsim market purge") deletes the seller accounts,
+  characters and auctions the module created. It first shows what it would
+  delete, then asks again before doing it. Bidders on a seller auction get their
+  gold back by mail. The market stops until a restart; with Market Mode still
+  on, the restart creates the sellers again, so untick Market Mode first if you
+  want them gone for good.
 
 
 Button reference
@@ -107,6 +117,8 @@ Clean Over Cap  Remove bot auctions now above the level caps (again skipping
                 any that have a bid).
 Run Tests       Run the module's built-in self-tests; output goes to Results.
 Set Bot Char    Choose which character the bot uses (see step 2).
+Market Fill     Market mode: fill the house now (see step 6).
+Market Purge    Delete the market sellers the module created (asks first).
 Help            This window.
 
 

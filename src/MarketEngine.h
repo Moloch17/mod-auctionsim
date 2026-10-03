@@ -13,7 +13,8 @@ namespace Market
     struct Listing
     {
         static constexpr uint32 kNoBuyout = UINT32_MAX;
-        static constexpr uint8 kBuyable = 0x1;  // a market buyer may take it (see MarketService)
+        static constexpr uint8 kBuyable = 0x1;   // a market buyer may take it (see MarketService)
+        static constexpr uint8 kBotOwned = 0x2;  // a market seller's listing (a fill counts these per item)
 
         uint32 itemIdx = 0;  // into Faction::items
         uint32 perUnit = kNoBuyout;
@@ -43,6 +44,7 @@ namespace Market
         uint32 unitPrice = 1;
         uint32 hours = 12;
         uint32 listings = 1;
+        uint32 expireAt = 0;  // unix seconds; 0 = now + hours (a fill sets it to the survivor's expiry)
     };
 
     // The market step's arithmetic, with no core dependency so the self-tests can run
@@ -75,6 +77,9 @@ namespace Market
         // (into Listings()) to `out` and returns how many buyers arrived.
         uint32 PlanBuys(Faction const& fac, double scaleTimesDt, size_t weekday, Rng& rng, std::vector<uint32>& out);
 
+        // The house's per-item state, for the self-tests.
+        size_t ItemCount() const { return _state.size(); }
+
     private:
         std::vector<Listing> _listings;
         std::vector<ItemState> _state;
@@ -86,5 +91,61 @@ namespace Market
         Faction const* _rateFaction = nullptr;
         double _rateScale = -1.0;
         size_t _rateWeekday = SIZE_MAX;
+    };
+
+    // MARKET_FORMAT.md's Fill: the runtime over the kFillHours before now on virtual
+    // bot listings only, with the real house as static competitors that are never
+    // bought. Runs a few steps at a time (Advance) so a fill never stalls one tick.
+    class FillRun
+    {
+    public:
+        static constexpr uint32 kFillHours = 48;
+
+        // `house`: every real listing of the faction's items (flags: kBotOwned on the
+        // market sellers' own). `slotOwners[i]`: owner id of bot slot i (virtual
+        // listings' owner, so distinct-seller counts merge with the real sellers').
+        // `weekdays[k]`: WEEKDAY column for simulated step k. Steps end at `endClock`.
+        void Begin(
+            Faction const& fac,
+            std::vector<Listing> const& house,
+            std::vector<uint32> const& slotOwners,
+            std::vector<uint8> const& weekdays,
+            double scale,
+            double dtHours,
+            uint64 endClock);
+
+        // Runs up to `steps` simulated steps; true once all are done.
+        bool Advance(uint32 steps, Rng& rng);
+        bool Done() const { return _step >= _steps; }
+        uint32 StepsDone() const { return _step; }
+        uint32 StepsTotal() const { return _steps; }
+        uint64 Posted() const { return _posted; }
+        uint64 Sold() const { return _sold; }
+
+        // After Done(): the survivors still up at endClock, minus, per item, as many as
+        // the sellers already have up (the earliest-expiring survivors are dropped).
+        // `expire` is absolute; owner is the virtual poster's owner id.
+        void Result(std::vector<Listing>& out) const;
+
+    private:
+        Faction const* _fac = nullptr;
+        std::vector<Listing> _static;
+        std::vector<Listing> _virtual;
+        std::vector<uint32> _slotOwners;
+        std::vector<uint8> _weekdays;
+        std::vector<uint32> _botUp;  // per item: the sellers' real listings up
+        double _scale = 0.0;
+        double _dtHours = 0.5;
+        uint64 _startClock = 0;
+        uint64 _endClock = 0;
+        uint32 _steps = 0;
+        uint32 _step = 0;
+        uint64 _posted = 0;
+        uint64 _sold = 0;
+        uint32 _nextId = 0;
+        Engine _engine;
+        std::vector<PostOrder> _orders;
+        std::vector<uint32> _claims;
+        std::vector<char> _gone;
     };
 }

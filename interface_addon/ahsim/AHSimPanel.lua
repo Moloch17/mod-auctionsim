@@ -437,6 +437,14 @@ function AHSim.BuildWindow()
     CreateCommandButton(
         leftColumn, "Set Bot Char", 0, -ly, LEFT_COLUMN_WIDTH, function() AHSim.ShowSetBotCharPopup() end)
     ly = ly + buttonStep
+    CreateCommandButton(
+        leftColumn, "Market Fill", 0, -ly, LEFT_COLUMN_WIDTH, function() AHSim:Send(OP.MARKETFILL) end)
+    ly = ly + buttonStep
+    -- Dry run first: the server reports what it would delete and, if anything, asks
+    -- (PURGEASK) for a second, confirming click.
+    CreateCommandButton(
+        leftColumn, "Market Purge", 0, -ly, LEFT_COLUMN_WIDTH, function() AHSim:Send(OP.MARKETPURGE) end)
+    ly = ly + buttonStep
     CreateCommandButton(leftColumn, "Help", 0, -ly, LEFT_COLUMN_WIDTH, function() AHSim.ShowHelp() end)
     ly = ly + ROW_HEIGHT
 
@@ -738,4 +746,28 @@ AHSim:RegisterHandler(OP.NOTICE, function(kind, a, b, modVer)
 
     AHSimDB.seenNotices[key] = true
     AddResultLine(text)
+end)
+
+AHSim:RegisterHandler(OP.MARKETMSG, function(line)
+    AddResultLine(line or "")
+end)
+
+StaticPopupDialogs["AHSIM_CONFIRM_PURGE"] = {
+    -- StaticPopup_Show takes two text arguments in 3.3.5.
+    text = "Delete the AuctionSim market sellers?\n\n%s and %s auction(s) will be deleted. Bidders get " ..
+        "their gold back by mail. This can't be undone.",
+    button1 = "Purge",
+    button2 = "Cancel",
+    OnAccept = function()
+        AHSim:Send(OP.MARKETPURGE, "confirm")
+    end,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+    showAlert = true,
+}
+
+AHSim:RegisterHandler(OP.PURGEASK, function(accounts, characters, auctions)
+    StaticPopup_Show("AHSIM_CONFIRM_PURGE",
+        sformat("%s account(s), %s character(s)", accounts or "?", characters or "?"), auctions or "?")
 end)

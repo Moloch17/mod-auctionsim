@@ -8,6 +8,7 @@
 #include "DatabaseEnv.h"
 #include "Log.h"
 #include "MotionMaster.h"
+#include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "QueryResult.h"
@@ -83,6 +84,187 @@ namespace Market
         }
     }
 
+    bool ParseSellerAccountName(std::string const& name, size_t& faction)
+    {
+        std::string_view const prefix = BotRoster::kAccountPrefix;
+        if (name.size() < prefix.size() + 3 || name.compare(0, prefix.size(), prefix) != 0)
+        {
+            return false;
+        }
+        char const side = name[prefix.size()];
+        if (side != 'A' && side != 'H')
+        {
+            return false;
+        }
+        for (size_t i = prefix.size() + 1; i < name.size(); ++i)
+        {
+            if (name[i] < '0' || name[i] > '9')
+            {
+                return false;
+            }
+        }
+        faction = side == 'A' ? 0 : 1;
+        return true;
+    }
+
+    namespace
+    {
+        bool IsModuleLook(size_t faction, uint8 race, uint8 playerClass)
+        {
+            auto matches = [race, playerClass](RaceClass const& look) {
+                return look.race == race && look.playerClass == playerClass;
+            };
+            return faction == 0 ? std::any_of(std::begin(kAllianceLooks), std::end(kAllianceLooks), matches)
+                                : std::any_of(std::begin(kHordeLooks), std::end(kHordeLooks), matches);
+        }
+    }
+
+    PurgePlan PlanPurge(
+        std::vector<PurgeAccount> const& candidates,
+        std::vector<PurgeCharacter> const& characters,
+        uint32 buyerAccount,
+        uint32 buyerCharacter)
+    {
+        PurgePlan plan;
+        for (PurgeAccount const& account : candidates)
+        {
+            size_t faction = 0;
+            if (!ParseSellerAccountName(account.name, faction))
+            {
+                continue;  // only shares the prefix: not the module's, never touched
+            }
+            std::vector<std::string> problems;
+            if (account.id == buyerAccount)
+            {
+                problems.push_back(Acore::StringFormat("account {} is the buyer bot's (BotAccountID)", account.name));
+            }
+            if (account.hasAccess)
+            {
+                problems.push_back(Acore::StringFormat("account {} has GM access", account.name));
+            }
+            std::vector<PurgeCharacter> mine;
+            for (PurgeCharacter const& character : characters)
+            {
+                if (character.account != account.id)
+                {
+                    continue;
+                }
+                if (character.guid == buyerCharacter)
+                {
+                    problems.push_back(
+                        Acore::StringFormat(
+                            "{} on {} is the buyer bot (BotCharacterID)", character.name, account.name));
+                }
+                else if (character.level != 1 || character.totalTime != 0 || !(character.atLogin & AT_LOGIN_FIRST) ||
+                         !IsModuleLook(faction, character.race, character.playerClass))
+                {
+                    problems.push_back(Acore::StringFormat(
+                        "{} on {} doesn't look like a module seller (level {}, played {} s, race {} class {})",
+                        character.name.empty() ? std::string("<unnamed>") : character.name,
+                        account.name,
+                        character.level,
+                        character.totalTime,
+                        character.race,
+                        character.playerClass));
+                }
+                else if (character.online)
+                {
+                    problems.push_back(Acore::StringFormat("{} on {} is online", character.name, account.name));
+                }
+                mine.push_back(character);
+            }
+            if (!problems.empty())
+            {
+                plan.problems.insert(plan.problems.end(), problems.begin(), problems.end());
+                continue;
+            }
+            plan.accounts.push_back(account);
+            plan.characters.insert(plan.characters.end(), mine.begin(), mine.end());
+        }
+        if (!plan.problems.empty())
+        {
+            plan.accounts.clear();
+            plan.characters.clear();
+        }
+        return plan;
+    }
+
+    PurgePlan BotRoster::GatherPurge(uint32 buyerAccount, uint32 buyerCharacter)
+    {
+        std::vector<PurgeAccount> accounts;
+        std::vector<PurgeCharacter> characters;
+        std::string idList;
+
+        if (QueryResult result =
+                LoginDatabase.Query("SELECT id, username FROM account WHERE username LIKE '{}%'", kAccountPrefix))
+        {
+            do
+            {
+                Field* fields = result->Fetch();
+                PurgeAccount account;
+                account.id = fields[0].Get<uint32>();
+                account.name = fields[1].Get<std::string>();
+                idList += (idList.empty() ? "" : ",") + std::to_string(account.id);
+                accounts.push_back(std::move(account));
+            } while (result->NextRow());
+        }
+        if (idList.empty())
+        {
+            return {};
+        }
+
+        if (QueryResult result = LoginDatabase.Query("SELECT DISTINCT id FROM account_access WHERE id IN ({})", idList))
+        {
+            do
+            {
+                uint32 id = result->Fetch()[0].Get<uint32>();
+                for (PurgeAccount& account : accounts)
+                {
+                    account.hasAccess |= account.id == id;
+                }
+            } while (result->NextRow());
+        }
+
+        if (QueryResult result = CharacterDatabase.Query(
+                "SELECT guid, account, name, race, class, level, at_login, totaltime, online FROM characters "
+                "WHERE account IN ({})",
+                idList))
+        {
+            do
+            {
+                Field* fields = result->Fetch();
+                PurgeCharacter character;
+                character.guid = fields[0].Get<uint32>();
+                character.account = fields[1].Get<uint32>();
+                character.name = fields[2].Get<std::string>();
+                character.race = fields[3].Get<uint8>();
+                character.playerClass = fields[4].Get<uint8>();
+                character.level = fields[5].Get<uint8>();
+                character.atLogin = fields[6].Get<uint16>();
+                character.totalTime = fields[7].Get<uint32>();
+                character.online = fields[8].Get<uint8>() != 0 ||
+                                   ObjectAccessor::FindConnectedPlayer(
+                                       ObjectGuid::Create<HighGuid::Player>(character.guid)) != nullptr;
+                characters.push_back(std::move(character));
+            } while (result->NextRow());
+        }
+        return PlanPurge(accounts, characters, buyerAccount, buyerCharacter);
+    }
+
+    void BotRoster::Clear()
+    {
+        _accounts.clear();
+        _owned.clear();
+        _botGuids.clear();
+        for (size_t faction = 0; faction < kFactions; ++faction)
+        {
+            _slots[faction].clear();
+            _slotNames[faction].clear();
+        }
+        _requestedAccounts.clear();
+        _pendingTries = 0;
+    }
+
     std::vector<BotPick> PickBots(
         std::vector<BotName> const& rows,
         uint32 wanted,
@@ -134,12 +316,10 @@ namespace Market
             Account account;
             account.id = fields[0].Get<uint32>();
             account.name = fields[1].Get<std::string>();
-            size_t const prefix = std::string_view(kAccountPrefix).size();
-            if (account.name.size() <= prefix || (account.name[prefix] != 'A' && account.name[prefix] != 'H'))
+            if (!ParseSellerAccountName(account.name, account.faction))
             {
                 continue;
             }
-            account.faction = account.name[prefix] == 'A' ? 0 : 1;
             idList += (idList.empty() ? "" : ",") + std::to_string(account.id);
             _accounts.push_back(std::move(account));
         } while (accounts->NextRow());

@@ -196,6 +196,14 @@ bool AuctionBuyingService::EnqueueBuyout(uint32 auctionId, AuctionHouseId houseI
     return true;
 }
 
+size_t AuctionBuyingService::ClearQueue()
+{
+    size_t dropped = _queue.size();
+    _queue.clear();
+    _queuedAuctionIds.clear();
+    return dropped;
+}
+
 void AuctionBuyingService::EnqueueForTest(AuctionEntry* auction, time_t buyTime)
 {
     _queue.push_back(

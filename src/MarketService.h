@@ -51,6 +51,29 @@ public:
     // Per world tick: retries a pending bot setup and creates carried-over posts.
     void Update(uint32 diff);
 
+    // MARKET_FORMAT.md's Fill for one faction slot: fast-forwards the 48 h before now
+    // on virtual listings (kFillStepsPerTick simulated steps per world tick), then
+    // queues the survivors for creation through the normal per-tick budget. False,
+    // with the reason in `note`, if the market isn't ready or a fill of that house
+    // is already running.
+    bool StartFill(size_t faction, std::string& note);
+
+    struct FillStatus
+    {
+        bool running = false;  // still simulating
+        uint32 stepsDone = 0;
+        uint32 stepsTotal = 0;
+        uint32 result = 0;  // listings the last finished fill queued
+        long long micros = 0;  // simulation time of the last finished fill
+    };
+    FillStatus GetFillStatus(size_t faction) const;
+
+    // Simulated fill steps per world tick, at most, and stopping once a tick has spent
+    // kFillTickBudgetMicros: at Scale 0.1 a step is ~0.3-1 ms, so 96 steps take about a
+    // dozen ticks; at Scale 1 a step is ~4-11 ms and the fill takes one step per tick.
+    static constexpr uint32 kFillStepsPerTick = 8;
+    static constexpr long long kFillTickBudgetMicros = 4000;
+
     // One market step on both houses. Until IsReady() it only remembers the request
     // and runs it once a pending setup completes.
     void Step();
@@ -112,4 +135,19 @@ private:
     size_t _pendingHead = 0;
     uint32 _budgetLeft = kMaxListingsPerTick;  // this tick's remaining auction creations
     std::array<HouseStats, Market::kFactions> _stats{};
+
+    // Collects the house's listings of the faction's items (one pass), flagging the
+    // sellers' own and what a market buyer may take.
+    void Snapshot(size_t faction, std::vector<Market::Listing>& out) const;
+    void FinishFill(size_t faction);
+
+    struct Fill
+    {
+        Market::FillRun run;
+        bool running = false;
+        uint32 result = 0;
+        long long micros = 0;
+    };
+    std::array<Fill, Market::kFactions> _fills;
+    std::vector<Market::Listing> _fillScratch;
 };

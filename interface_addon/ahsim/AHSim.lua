@@ -32,6 +32,8 @@ AHSim.OP = {
     SHOWQUEUE = "SHOWQUEUE",
     RUNQUEUE = "RUNQUEUE",
     SETBOTCHAR = "SETBOTCHAR",
+    MARKETFILL = "MARKETFILL",
+    MARKETPURGE = "MARKETPURGE",
     -- server -> client
     ERROR = "ERROR",
     CONFIG = "CONFIG",
@@ -45,6 +47,8 @@ AHSim.OP = {
     CLEANRESULT = "CLEANRESULT",
     SETBOTCHARRESULT = "SETBOTCHARRESULT",
     NOTICE = "NOTICE",
+    MARKETMSG = "MARKETMSG",
+    PURGEASK = "PURGEASK",
 }
 
 function AHSim:RegisterHandler(msgType, fn)

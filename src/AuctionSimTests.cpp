@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <functional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -1856,6 +1857,267 @@ namespace
         return Pass(name, detail);
     }
 
+    // A mid-sized synthetic market (one faction, Alliance) for the fill tests.
+    std::string SyntheticMarket(uint32 items, uint32 basketRows, uint32 bots, uint64 seed)
+    {
+        Market::Rng gen(seed);
+        std::string itemRows, basket, botRows;
+        for (uint32 i = 0; i < items; ++i)
+        {
+            itemRows += Acore::StringFormat("2:{}:{}:{}:{}:20:{}:{:.3f}\n", 1000 + i, i % 8,
+                100 + gen.Next() % 10000, 1 + i % 10, gen.Next() % 20, 0.05 + gen.Uniform() * 1.5);
+        }
+        for (uint32 r = 0; r < basketRows; ++r)
+        {
+            basket += Acore::StringFormat("2:{}:{}:{}:{:.4f}:0.4:1.3\n", r % bots, 1000 + gen.Next() % items, r % 4,
+                0.05 + gen.Uniform() * 0.6);
+        }
+        for (uint32 b = 0; b < bots; ++b)
+        {
+            botRows += Acore::StringFormat("2:{}:Bot{}:1\n", b, b);
+        }
+        std::string policy = FallbackPolicyRows(2);
+        auto count = [](std::string const& t) { return std::count(t.begin(), t.end(), '\n'); };
+        return "AUCTIONSIM_MARKET 1\nMETA 1\n2:1:1:6000:400\n" + Acore::StringFormat("ITEM {}\n", count(itemRows)) +
+               itemRows + "CURVE 1\n2:-1:1:0.95:0.9:0.8:0.6:0.4:0.2:0.1:0.05\n" +
+               Acore::StringFormat("POLICY {}\n", count(policy)) + policy +
+               "STACK 1\n2:-1:-1:-0.7:-0.3:0:0:0:0.3:0.7\n" + Acore::StringFormat("BOT {}\n", count(botRows)) +
+               botRows + Acore::StringFormat("BASKET {}\n", count(basket)) + basket;
+    }
+
+    // The runtime from an empty house for `hours`, as the parity harness runs it; returns
+    // the house at the end (bot listings, flagged as the sellers' own).
+    std::vector<Market::Listing> LongRun(Market::Faction const& fac, uint32 bots, double scale, uint32 hours,
+        uint64 endClock, Market::Rng& rng)
+    {
+        Market::Engine engine;
+        std::vector<Market::Listing> live;
+        std::vector<Market::PostOrder> orders;
+        std::vector<uint32> claims;
+        uint32 const steps = hours * 2;
+        uint64 const startClock = endClock - uint64(hours) * 3600;
+        uint32 nextId = 1;
+        for (uint32 step = 0; step < steps; ++step)
+        {
+            uint64 const clock = startClock + uint64(step) * 1800;
+            live.erase(std::remove_if(live.begin(), live.end(),
+                           [clock](Market::Listing const& l) { return l.expire <= clock; }),
+                live.end());
+            engine.Listings().assign(live.begin(), live.end());
+            engine.BuildState(fac.items.size());
+            orders.clear();
+            engine.PlanPosts(fac, bots, rng, orders);
+            for (Market::PostOrder const& order : orders)
+            {
+                for (uint32 k = 0; k < order.listings; ++k)
+                {
+                    Market::Listing listing;
+                    listing.itemIdx = order.itemIdx;
+                    listing.perUnit = order.unitPrice;
+                    listing.count = order.count;
+                    listing.owner = order.botSlot;
+                    listing.auctionId = nextId++;
+                    listing.expire = static_cast<uint32>(clock + uint64(order.hours) * 3600);
+                    listing.flags = Market::Listing::kBuyable | Market::Listing::kBotOwned;
+                    engine.Listings().push_back(listing);
+                }
+            }
+            engine.BuildState(fac.items.size());
+            claims.clear();
+            engine.PlanBuys(fac, scale * 0.5, 0, rng, claims);
+            std::vector<char> gone(engine.Listings().size(), 0);
+            for (uint32 index : claims)
+            {
+                gone[index] = 1;
+            }
+            live.clear();
+            for (size_t i = 0; i < engine.Listings().size(); ++i)
+            {
+                if (!gone[i])
+                {
+                    live.push_back(engine.Listings()[i]);
+                }
+            }
+        }
+        live.erase(std::remove_if(live.begin(), live.end(),
+                       [endClock](Market::Listing const& l) { return l.expire <= endClock; }),
+            live.end());
+        return live;
+    }
+
+    size_t ItemsUp(std::vector<Market::Listing> const& listings)
+    {
+        std::vector<uint32> items;
+        for (Market::Listing const& listing : listings)
+        {
+            items.push_back(listing.itemIdx);
+        }
+        std::sort(items.begin(), items.end());
+        return static_cast<size_t>(std::unique(items.begin(), items.end()) - items.begin());
+    }
+
+    // Fills `house` (fixed competitors) and returns what the fill would create.
+    std::vector<Market::Listing> RunFill(Market::Faction const& fac, std::vector<Market::Listing> const& house,
+        uint32 bots, double scale, uint64 endClock, Market::Rng& rng, long long* micros = nullptr)
+    {
+        std::vector<uint32> owners;
+        for (uint32 b = 0; b < bots; ++b)
+        {
+            owners.push_back(b);
+        }
+        Market::FillRun fill;
+        auto start = std::chrono::steady_clock::now();
+        fill.Begin(fac, house, owners, std::vector<uint8>(96, 0), scale, 0.5, endClock);
+        while (!fill.Advance(8, rng))
+        {
+        }
+        std::vector<Market::Listing> out;
+        fill.Result(out);
+        if (micros)
+        {
+            *micros = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - start).count();
+        }
+        return out;
+    }
+
+    TestResult TestMarketFill()
+    {
+        std::string const name = "Market fill";
+        Market::Data data;
+        std::string error;
+        if (!ParseFixture(SyntheticMarket(600, 3000, 50, 11), data, error))
+        {
+            return Fail(name, Acore::StringFormat("synthetic market refused: {}", error));
+        }
+        double const scale = 1.0;
+        data.SetRates(scale, 0.5);
+        Market::Faction const& fac = data.factions[0];
+        uint64 const now = 1783296000ULL + 21 * 86400;
+        Market::Rng rng(31);
+
+        // Steady state: 10 days from empty.
+        std::vector<Market::Listing> steady = LongRun(fac, 50, scale, 240, now, rng);
+        long long micros = 0;
+        std::vector<Market::Listing> fromEmpty = RunFill(fac, {}, 50, scale, now, rng, &micros);
+        std::vector<Market::Listing> onFull = RunFill(fac, steady, 50, scale, now, rng);
+
+        // Every survivor expires in the future, within 48 h.
+        for (Market::Listing const& listing : fromEmpty)
+        {
+            if (listing.expire <= now || listing.expire > now + 48 * 3600)
+            {
+                return Fail(name, Acore::StringFormat("a survivor expires at {} (now {})", listing.expire, now));
+            }
+        }
+
+        double const steadyCount = static_cast<double>(steady.size());
+        double const countRatio = static_cast<double>(fromEmpty.size()) / std::max(1.0, steadyCount);
+        double const itemsRatio =
+            static_cast<double>(ItemsUp(fromEmpty)) / std::max<double>(1.0, static_cast<double>(ItemsUp(steady)));
+        double const topUp = static_cast<double>(onFull.size()) / std::max(1.0, steadyCount);
+        std::string detail = Acore::StringFormat(
+            "long run {} listings / {} items; fill from empty {} / {} ({:.0f}% / {:.0f}%) in {} us; "
+            "fill on the full house adds {} ({:.0f}%)",
+            steady.size(),
+            ItemsUp(steady),
+            fromEmpty.size(),
+            ItemsUp(fromEmpty),
+            countRatio * 100.0,
+            itemsRatio * 100.0,
+            micros,
+            onFull.size(),
+            topUp * 100.0);
+        if (std::fabs(countRatio - 1.0) > 0.15 || std::fabs(itemsRatio - 1.0) > 0.15)
+        {
+            return Fail(name, detail);
+        }
+        // Per item, only the fill's excess over what is up is created: Poisson noise on
+        // thin items, so "little", not nothing.
+        if (topUp > 0.35)
+        {
+            return Fail(name, detail);
+        }
+        return Pass(name, detail);
+    }
+
+    TestResult TestMarketPurgePlan()
+    {
+        std::string const name = "Market purge selection";
+        using Market::PurgeAccount;
+        using Market::PurgeCharacter;
+        auto seller = [](uint32 guid, uint32 account, std::string n, uint8 race, uint8 cls) {
+            PurgeCharacter c;
+            c.guid = guid;
+            c.account = account;
+            c.name = std::move(n);
+            c.race = race;
+            c.playerClass = cls;
+            c.level = 1;
+            c.atLogin = AT_LOGIN_FIRST;
+            return c;
+        };
+        std::vector<PurgeAccount> accounts = {
+            {10, "AHSIMMKTA01", false},
+            {11, "AHSIMMKTH01", false},
+            {12, "AHSIMMKTX", false},
+            {13, "AHSIMMKTA1B", false}};
+        std::vector<PurgeCharacter> chars = {
+            seller(100, 10, "Alpha", RACE_HUMAN, CLASS_WARRIOR),
+            seller(101, 10, "Bravo", RACE_DRAENEI, CLASS_WARRIOR),
+            seller(200, 11, "Gamma", RACE_BLOODELF, CLASS_PALADIN),
+            seller(300, 12, "Notours", RACE_HUMAN, CLASS_MAGE),
+        };
+
+        Market::PurgePlan plan = Market::PlanPurge(accounts, chars, 1, 5);
+        if (!plan.problems.empty() || plan.accounts.size() != 2 || plan.characters.size() != 3)
+        {
+            return Fail(name, Acore::StringFormat("clean case: {} accounts, {} characters, {} problems",
+                plan.accounts.size(), plan.characters.size(), plan.problems.size()));
+        }
+        for (PurgeCharacter const& c : plan.characters)
+        {
+            if (c.account == 12)
+            {
+                return Fail(name, "selected a character of an account that only shares the prefix");
+            }
+        }
+
+        struct Case
+        {
+            char const* what;
+            std::function<void(std::vector<PurgeAccount>&, std::vector<PurgeCharacter>&, uint32&, uint32&)> change;
+        };
+        std::vector<Case> const refusals = {
+            {"a levelled character", [](auto&, auto& c, auto&, auto&) { c[0].level = 80; }},
+            {"a played character", [](auto&, auto& c, auto&, auto&) { c[1].totalTime = 60; }},
+            {"first login done", [](auto&, auto& c, auto&, auto&) { c[0].atLogin = 0; }},
+            {"a Horde race on an Alliance account", [](auto&, auto& c, auto&, auto&) { c[0].race = RACE_ORC; }},
+            {"an online seller", [](auto&, auto& c, auto&, auto&) { c[2].online = true; }},
+            {"GM access", [](auto& a, auto&, auto&, auto&) { a[1].hasAccess = true; }},
+            {"the buyer's account", [](auto&, auto&, auto& acc, auto&) { acc = 11; }},
+            {"the buyer's character", [](auto&, auto&, auto&, auto& chr) { chr = 101; }},
+        };
+        for (Case const& c : refusals)
+        {
+            std::vector<PurgeAccount> a = accounts;
+            std::vector<PurgeCharacter> ch = chars;
+            uint32 buyerAccount = 1;
+            uint32 buyerCharacter = 5;
+            c.change(a, ch, buyerAccount, buyerCharacter);
+            Market::PurgePlan refused = Market::PlanPurge(a, ch, buyerAccount, buyerCharacter);
+            if (refused.problems.empty() || !refused.accounts.empty() || !refused.characters.empty())
+            {
+                return Fail(name, Acore::StringFormat("{} didn't refuse the whole purge", c.what));
+            }
+        }
+        if (!Market::PlanPurge({}, {}, 1, 5).accounts.empty())
+        {
+            return Fail(name, "selected something with no accounts");
+        }
+        return Pass(name, Acore::StringFormat("{} refusal cases", refusals.size()));
+    }
+
     TestResult TestMarketLoaded(Market::Data const& data, MarketService const* market)
     {
         std::string const name = "Market data loaded";
@@ -2233,6 +2495,8 @@ namespace AuctionSimTests
             TestMarketPricingAndBuyers(),
             TestMarketBotNameSkipping(),
             TestMarketStepCost(),
+            TestMarketFill(),
+            TestMarketPurgePlan(),
         };
         if (loaded)
         {

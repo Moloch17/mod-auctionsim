@@ -195,4 +195,136 @@ namespace Market
         }
         return buyers;
     }
+
+    void FillRun::Begin(
+        Faction const& fac,
+        std::vector<Listing> const& house,
+        std::vector<uint32> const& slotOwners,
+        std::vector<uint8> const& weekdays,
+        double scale,
+        double dtHours,
+        uint64 endClock)
+    {
+        _fac = &fac;
+        _static.assign(house.begin(), house.end());
+        _botUp.assign(fac.items.size(), 0);
+        for (Listing& listing : _static)
+        {
+            listing.flags &= static_cast<uint8>(~Listing::kBuyable);  // competitors only
+            if ((listing.flags & Listing::kBotOwned) && listing.itemIdx < _botUp.size())
+            {
+                _botUp[listing.itemIdx]++;
+            }
+        }
+        _virtual.clear();
+        _slotOwners = slotOwners;
+        _weekdays = weekdays;
+        _scale = scale;
+        _dtHours = dtHours;
+        _steps = static_cast<uint32>(static_cast<double>(kFillHours) / dtHours + 0.5);
+        _endClock = endClock;
+        _startClock = endClock - static_cast<uint64>(kFillHours) * 3600;
+        _step = 0;
+        _posted = 0;
+        _sold = 0;
+        _nextId = 0;
+    }
+
+    bool FillRun::Advance(uint32 steps, Rng& rng)
+    {
+        if (!_fac)
+        {
+            return true;
+        }
+        Faction const& fac = *_fac;
+        uint32 const bots = static_cast<uint32>(_slotOwners.size());
+        for (uint32 n = 0; n < steps && _step < _steps; ++n, ++_step)
+        {
+            uint64 const clock = _startClock + static_cast<uint64>(static_cast<double>(_step) * _dtHours * 3600.0);
+
+            // Expire (end > now survives), then the house as it stands this step.
+            _virtual.erase(std::remove_if(_virtual.begin(), _virtual.end(),
+                               [clock](Listing const& l) { return l.expire <= clock; }),
+                _virtual.end());
+            std::vector<Listing>& listings = _engine.Listings();
+            listings.assign(_static.begin(), _static.end());
+            listings.insert(listings.end(), _virtual.begin(), _virtual.end());
+            _engine.BuildState(fac.items.size());
+
+            _orders.clear();
+            _engine.PlanPosts(fac, bots, rng, _orders);
+            for (PostOrder const& order : _orders)
+            {
+                for (uint32 k = 0; k < order.listings; ++k)
+                {
+                    Listing listing;
+                    listing.itemIdx = order.itemIdx;
+                    listing.perUnit = order.unitPrice;
+                    listing.count = order.count;
+                    listing.owner = _slotOwners[order.botSlot];
+                    listing.auctionId = ++_nextId;
+                    listing.expire = static_cast<uint32>(clock + uint64(order.hours) * 3600);
+                    listing.flags = Listing::kBuyable | Listing::kBotOwned;
+                    listings.push_back(listing);
+                    ++_posted;
+                }
+            }
+            _engine.BuildState(fac.items.size());
+
+            _claims.clear();
+            size_t const weekday = _step < _weekdays.size() ? _weekdays[_step] : 0;
+            _engine.PlanBuys(fac, _scale * _dtHours, weekday, rng, _claims);
+            _sold += _claims.size();
+
+            // The virtual listings left: buyable ones only (statics never are).
+            _gone.assign(listings.size(), 0);
+            for (uint32 index : _claims)
+            {
+                _gone[index] = 1;
+            }
+            _virtual.clear();
+            for (size_t i = 0; i < listings.size(); ++i)
+            {
+                if (!_gone[i] && (listings[i].flags & Listing::kBuyable))
+                {
+                    _virtual.push_back(listings[i]);
+                }
+            }
+        }
+        return Done();
+    }
+
+    void FillRun::Result(std::vector<Listing>& out) const
+    {
+        out.clear();
+        for (Listing const& listing : _virtual)
+        {
+            if (listing.expire > _endClock)
+            {
+                out.push_back(listing);
+            }
+        }
+        // Per item, latest expiry first; keep all but the first botUp[item] from the end.
+        std::sort(out.begin(), out.end(), [](Listing const& a, Listing const& b) {
+            return a.itemIdx != b.itemIdx ? a.itemIdx < b.itemIdx : a.expire > b.expire;
+        });
+        size_t write = 0;
+        size_t i = 0;
+        while (i < out.size())
+        {
+            size_t j = i;
+            while (j < out.size() && out[j].itemIdx == out[i].itemIdx)
+            {
+                ++j;
+            }
+            size_t const have = out[i].itemIdx < _botUp.size() ? _botUp[out[i].itemIdx] : 0;
+            size_t const keep = (j - i) > have ? (j - i) - have : 0;
+            for (size_t k = i; k < i + keep; ++k)
+            {
+                out[write++] = out[k];
+            }
+            i = j;
+        }
+        out.resize(write);
+    }
 }

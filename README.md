@@ -21,6 +21,8 @@ Every 30 minutes (fixed, not configurable), AuctionSim scans both auction houses
 - **Buyers.** Buyers arrive per item at learned rates (with a weekday pattern), each with a reservation price, and buy the cheapest listing at or under it -- whoever owns it, so players sell to the market by listing at a fair price. Purchases go through the bot character (`BotCharacterID`) and its queue, spread over 20 minutes. A player's listing of a vendor-stocked item is never bought above the vendor price.
 - **Gold.** The only gold that enters the economy is the price the buyer bot pays for a *player's* listing (the core's normal sale mail, minus its cut). The buyer itself is never debited. Everything paid to a seller bot -- sale proceeds, returned deposits, expired items -- is discarded, so gold players spend on bot listings leaves the economy. Seller bots hold no gold; their deposits are computed as the core would and recorded on the auction, not debited.
 - `AuctionSim.Market.Scale` (default 0.1) sizes the market as a fraction of Lordaeron's (~60k auctions per faction at 1). It doesn't depend on the realm's population.
+- `.auctionsim market fill [alliance|horde]` populates a house at once (MARKET_FORMAT.md's Fill): it simulates the 48 hours before now on virtual seller listings, with the real house as competitors that are never bought, and creates the survivors the sellers don't already have up, each with its remaining time, through the same 100-per-tick creation queue. The simulation itself is spread over ticks (at most ~4 ms each).
+- `.auctionsim market purge` reports what it would delete; `.auctionsim market purge confirm` deletes the module's seller accounts (`AHSIMMKTA..`/`AHSIMMKTH..`) and their characters through the core's `AccountMgr::DeleteAccount`, after removing every seller auction (a bidder gets the bid back by the core's cancel mail). It refuses entirely if a seller account holds a character the module didn't create (levelled, played, wrong race/class/faction, online, GM access, or the buyer bot), and never touches the buyer bot. The market then stops until restart or `.auctionsim market reload`; with `Mode = Market` that restart creates the sellers again, so set `Mode = Replay` (or disable the module) first to remove the footprint.
 - `.auctionsim market status` shows the sellers in use, the last step's numbers and the work still queued; `.auctionsim market reload` re-reads `auctionsim.conf` and the data file. Without a current `auctionsim_market.dat` the module refuses to run in Market mode and tells GMs at login.
 - Cost: one pass over each house per 30 minutes; at Scale 0.1 a step's arithmetic takes about 0.5 ms per house, and auctions are created at most 100 per world tick.
 
@@ -131,6 +133,16 @@ worldserver after ticking or unticking it.
   the last step's numbers and what is still waiting to post.
 - If auctionsim_market.dat is missing or out of date the module refuses to run
   and tells GMs at login; untick Market Mode to go back to Replay.
+- "Market Fill" (or ".auctionsim market fill [alliance|horde]") fills the
+  house at once, as if the sellers had been running for the last 48 hours,
+  instead of waiting a day or two. Auctions appear at up to 100 per server tick;
+  ".auctionsim market status" shows the progress.
+- "Market Purge" (or ".auctionsim market purge") deletes the seller accounts,
+  characters and auctions the module created. It first shows what it would
+  delete, then asks again before doing it. Bidders on a seller auction get their
+  gold back by mail. The market stops until a restart; with Market Mode still
+  on, the restart creates the sellers again, so untick Market Mode first if you
+  want them gone for good.
 
 
 Button reference
@@ -146,6 +158,8 @@ Clean Over Cap  Remove bot auctions now above the level caps (again skipping
                 any that have a bid).
 Run Tests       Run the module's built-in self-tests; output goes to Results.
 Set Bot Char    Choose which character the bot uses (see step 2).
+Market Fill     Market mode: fill the house now (see step 6).
+Market Purge    Delete the market sellers the module created (asks first).
 Help            This window.
 
 

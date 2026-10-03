@@ -16,6 +16,7 @@
 #include "Common.h"
 #include "Config.h"
 #include "GameTime.h"
+#include "Log.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -48,6 +49,8 @@ namespace
         constexpr std::string_view ShowQueue = "SHOWQUEUE";
         constexpr std::string_view RunQueue = "RUNQUEUE";
         constexpr std::string_view SetBotChar = "SETBOTCHAR";
+        constexpr std::string_view MarketFill = "MARKETFILL";    // [alliance|horde]
+        constexpr std::string_view MarketPurge = "MARKETPURGE";  // [confirm]
 
         // Outbound: server -> client message types.
         constexpr std::string_view Error = "ERROR";
@@ -61,6 +64,11 @@ namespace
         constexpr std::string_view RunQueueResult = "RUNQUEUERESULT";
         constexpr std::string_view CleanResult = "CLEANRESULT";
         constexpr std::string_view SetBotCharResult = "SETBOTCHARRESULT";
+        // MARKETMSG\t<line> -- one line of a market command's output, for the Results box.
+        constexpr std::string_view MarketMsg = "MARKETMSG";
+        // PURGEASK\t<accounts>\t<characters>\t<auctions> -- a purge dry-run found something to
+        // delete; the addon asks the GM to confirm, then sends MARKETPURGE\tconfirm.
+        constexpr std::string_view PurgeAsk = "PURGEASK";
         // NOTICE\t<kind>\t<a>\t<b>\t<moduleVersion> -- one-shot warnings shown once
         // per version in the addon's Results log. kind: "config" (a<b = have<need),
         // "data" / "market" (a vs b = have vs need; market have 0 = missing), "version"
@@ -531,6 +539,39 @@ namespace
                 "{}\tok\t{}\t{}\t{}\t{}", Msg::SetBotCharResult, name, characterId, accountId, note));
     }
 
+    void HandleMarketFill(Player* target, std::vector<std::string_view> const& tokens)
+    {
+        if (!RequireEnabled(target))
+        {
+            return;
+        }
+        bool ok = false;
+        std::string_view which = tokens.size() > 1 ? tokens[1] : std::string_view{};
+        for (std::string const& line : AuctionSim::instance()->FillMarket(which, ok))
+        {
+            SendMessage(target, Acore::StringFormat("{}\t{}", Msg::MarketMsg, line));
+        }
+    }
+
+    // Not gated on RequireEnabled: removing the footprint must work while disabled.
+    void HandleMarketPurge(Player* target, std::vector<std::string_view> const& tokens)
+    {
+        AuctionSim* sim = AuctionSim::instance();
+        bool const confirm = tokens.size() > 1 && tokens[1] == "confirm";
+        AuctionSim::PurgeReport report = sim->PurgeMarket(confirm);
+        for (std::string const& line : AuctionSim::DescribePurge(report, confirm, sim->IsMarketMode()))
+        {
+            LOG_INFO("module", "AuctionSim: {}", line);
+            SendMessage(target, Acore::StringFormat("{}\t{}", Msg::MarketMsg, line));
+        }
+        if (!confirm && !report.refused && report.accounts > 0)
+        {
+            SendMessage(target,
+                Acore::StringFormat(
+                    "{}\t{}\t{}\t{}", Msg::PurgeAsk, report.accounts, report.characters, report.auctions));
+        }
+    }
+
     // First request on load. A reply (GM-only) is the client's cue to build the
     // window. tokens[1], if present, is the addon's "## Version" -- compared here so
     // a version mismatch (and any outdated config/data) surfaces in the addon's
@@ -610,6 +651,8 @@ namespace
         {Msg::ShowQueue, HandleShowQueue},
         {Msg::RunQueue, HandleRunQueue},
         {Msg::SetBotChar, HandleSetBotChar},
+        {Msg::MarketFill, HandleMarketFill},
+        {Msg::MarketPurge, HandleMarketPurge},
     };
 
     void HandleRequest(Player* player, std::string const& payload)

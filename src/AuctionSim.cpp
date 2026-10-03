@@ -5,6 +5,7 @@
 #include <string>
 #include <system_error>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include "ASConfig.h"
 #include "AuctionHouseMgr.h"
@@ -15,6 +16,8 @@
 #include "DatabaseEnvFwd.h"
 #include "Define.h"
 #include "Log.h"
+#include "AccountMgr.h"
+#include "CharacterCache.h"
 #include "Mail.h"
 #include "MarketService.h"
 #include "StringFormat.h"
@@ -243,6 +246,10 @@ void AuctionSim::RunScan()
         market->Step();
         return;
     }
+    if (IsMarketMode())
+    {
+        return;  // Market mode without a running market (purged): never fall back to Replay
+    }
     ScanAuctions(AuctionHouseId::Alliance);
     ScanAuctions(AuctionHouseId::Horde);
 }
@@ -274,6 +281,7 @@ bool AuctionSim::ReloadMarket(std::string& note)
 
     // The services hold references into marketData and config: drop the market first.
     market.reset();
+    _marketPurged = false;
     config->marketBots = fresh->marketBots;
     config->marketScale = fresh->marketScale;
     if (!LoadMarketData())
@@ -610,6 +618,220 @@ void AuctionSimMailManager::OnBeforeMailDraftSendMailTo(
             deleteMailItemsFromDB = true;
         }
     }
+}
+
+AuctionSim::PurgeReport AuctionSim::PurgeMarket(bool confirm)
+{
+    PurgeReport report;
+    uint32 const buyerAccount = sConfigMgr->GetOption<uint32>("AuctionSim.BotAccountID", 0);
+    uint32 const buyerCharacter = sConfigMgr->GetOption<uint32>("AuctionSim.BotCharacterID", 0);
+    Market::PurgePlan plan = Market::BotRoster::GatherPurge(buyerAccount, buyerCharacter);
+    report.problems = plan.problems;
+    if (!plan.problems.empty())
+    {
+        report.refused = true;
+        return report;
+    }
+
+    std::unordered_set<uint32> guids;
+    std::string guidList;
+    for (Market::PurgeCharacter const& character : plan.characters)
+    {
+        guids.insert(character.guid);
+        guidList += (guidList.empty() ? "" : ",") + std::to_string(character.guid);
+    }
+    report.accounts = static_cast<uint32>(plan.accounts.size());
+    report.characters = static_cast<uint32>(plan.characters.size());
+
+    for (AuctionHouseId houseId : {AuctionHouseId::Alliance, AuctionHouseId::Horde, AuctionHouseId::Neutral})
+    {
+        for (auto const& entry : sAuctionMgr->GetAuctionsMapByHouseId(houseId)->GetAuctions())
+        {
+            if (guids.count(entry.second->owner.GetCounter()))
+            {
+                report.auctions++;
+                report.auctionsWithBids += entry.second->bid > 0 ? 1 : 0;
+            }
+        }
+    }
+    if (!guidList.empty())
+    {
+        if (QueryResult mails = CharacterDatabase.Query("SELECT COUNT(*) FROM mail WHERE receiver IN ({})", guidList))
+        {
+            report.mails = mails->Fetch()[0].Get<uint32>();
+        }
+    }
+    if (!confirm || plan.accounts.empty())
+    {
+        return report;
+    }
+
+    // 1. Stop the market: no posting, carried-over posts, fills or market buys from
+    //    here on. Market buyers are the only thing queued in Market mode.
+    market.reset();
+    _marketPurged = IsMarketMode();
+    if (buyingService && IsMarketMode())
+    {
+        report.queuedDropped = static_cast<uint32>(buyingService->ClearQueue());
+    }
+
+    // 2. Every seller auction goes, as a cancel would: a bidder gets the bid back by
+    //    the core's cancel mail (the item was the seller bot's and is destroyed). This
+    //    must happen before the characters go: deleting a character drops its item
+    //    rows (the auction items are owned by it) but never its auctions.
+    auto trans = CharacterDatabase.BeginTransaction();
+    for (AuctionHouseId houseId : {AuctionHouseId::Alliance, AuctionHouseId::Horde, AuctionHouseId::Neutral})
+    {
+        AuctionHouseObject* house = sAuctionMgr->GetAuctionsMapByHouseId(houseId);
+        std::vector<AuctionEntry*> toRemove;
+        for (auto const& entry : house->GetAuctions())
+        {
+            if (guids.count(entry.second->owner.GetCounter()))
+            {
+                toRemove.push_back(entry.second);
+            }
+        }
+        for (AuctionEntry* auction : toRemove)
+        {
+            if (auction->bidder)
+            {
+                sAuctionMgr->SendAuctionCancelledToBidderMail(auction, trans);
+            }
+            auction->DeleteFromDB(trans);
+            sAuctionMgr->RemoveAItem(auction->item_guid, true, &trans);
+            house->RemoveAuction(auction);
+        }
+    }
+    CharacterDatabase.CommitTransaction(trans);
+
+    // 3. Forget the sellers before deleting them, so nothing routes to them meanwhile.
+    marketRoster.Clear();
+
+    // 4. Characters and accounts through the stock path: AccountMgr::DeleteAccount runs
+    //    Player::DeleteFromDB(deleteFinally) on each character (which also returns any
+    //    player-sent mail to its sender) and removes the account's auth rows.
+    for (Market::PurgeAccount const& account : plan.accounts)
+    {
+        AccountOpResult result = AccountMgr::DeleteAccount(account.id);
+        if (result != AOR_OK)
+        {
+            report.problems.push_back(Acore::StringFormat(
+                "AccountMgr couldn't delete {} (error {})", account.name, static_cast<uint32>(result)));
+        }
+    }
+    for (Market::PurgeCharacter const& character : plan.characters)
+    {
+        sCharacterCache->DeleteCharacterCacheEntry(
+            ObjectGuid::Create<HighGuid::Player>(character.guid), character.name);
+    }
+    report.done = true;
+
+    LOG_INFO(
+        "module",
+        "AuctionSim: market purge: deleted {} account(s), {} character(s), {} auction(s) ({} with bids, bidders "
+        "refunded), {} mail(s) with the characters; dropped {} queued buy(s)",
+        report.accounts,
+        report.characters,
+        report.auctions,
+        report.auctionsWithBids,
+        report.mails,
+        report.queuedDropped);
+    return report;
+}
+
+std::vector<std::string> AuctionSim::DescribePurge(PurgeReport const& report, bool confirm, bool marketMode)
+{
+    std::vector<std::string> lines;
+    if (report.refused)
+    {
+        lines.push_back("Market purge refused -- the seller accounts hold something the module didn't create:");
+        for (std::string const& problem : report.problems)
+        {
+            lines.push_back("  " + problem);
+        }
+        lines.push_back("Nothing was deleted.");
+        return lines;
+    }
+    if (report.accounts == 0)
+    {
+        lines.push_back("Market purge: no market seller accounts found -- nothing to delete.");
+        return lines;
+    }
+    lines.push_back(Acore::StringFormat(
+        "Market purge {}: {} account(s), {} character(s), {} auction(s) ({} with bids -- bidders get their gold "
+        "back by mail), {} mail(s).",
+        report.done ? "done" : "would delete",
+        report.accounts,
+        report.characters,
+        report.auctions,
+        report.auctionsWithBids,
+        report.mails));
+    if (report.done)
+    {
+        lines.push_back(Acore::StringFormat(
+            "The market is stopped until restart or \".auctionsim market reload\"; {} queued buy(s) dropped.",
+            report.queuedDropped));
+        for (std::string const& problem : report.problems)
+        {
+            lines.push_back("  " + problem);
+        }
+    }
+    else if (confirm)
+    {
+        lines.push_back("Nothing was deleted.");
+    }
+    else
+    {
+        lines.push_back("Run \".auctionsim market purge confirm\" to delete them.");
+    }
+    if (marketMode)
+    {
+        lines.push_back("AuctionSim.Mode is Market: the next start or reload creates the sellers again. Set "
+                        "AuctionSim.Mode = Replay (or disable the module) first to remove the module's footprint.");
+    }
+    return lines;
+}
+
+std::vector<std::string> AuctionSim::FillMarket(std::string_view which, bool& ok)
+{
+    ok = false;
+    std::vector<std::string> lines;
+    if (!market)
+    {
+        lines.push_back(_marketPurged ? "The market was purged; restart or reload it first."
+                                      : "The market isn't running (AuctionSim.Mode = Market and enabled?).");
+        return lines;
+    }
+    std::vector<size_t> slots;
+    if (which.empty() || which == "both")
+    {
+        slots = {0, 1};
+    }
+    else if (which == "alliance")
+    {
+        slots = {0};
+    }
+    else if (which == "horde")
+    {
+        slots = {1};
+    }
+    else
+    {
+        lines.push_back("Usage: .auctionsim market fill [alliance|horde]");
+        return lines;
+    }
+    for (size_t slot : slots)
+    {
+        std::string note;
+        bool started = market->StartFill(slot, note);
+        ok |= started;
+        lines.push_back(Acore::StringFormat("{}: {}", slot == 0 ? "Alliance" : "Horde", note));
+    }
+    if (ok)
+    {
+        lines.push_back("Progress: .auctionsim market status");
+    }
+    return lines;
 }
 
 void AuctionSimMarketGuard::OnPlayerLogin(Player* player)

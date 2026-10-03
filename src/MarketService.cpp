@@ -148,6 +148,29 @@ void MarketService::Update(uint32 diff)
         }
     }
 
+    for (size_t faction = 0; faction < Market::kFactions; ++faction)
+    {
+        Fill& fill = _fills[faction];
+        if (fill.running)
+        {
+            // Simulated steps until this tick's time budget is spent (at least one).
+            auto start = std::chrono::steady_clock::now();
+            bool done = false;
+            long long spent = 0;
+            for (uint32 n = 0; n < kFillStepsPerTick && !done && spent < kFillTickBudgetMicros; ++n)
+            {
+                done = fill.run.Advance(1, _rng);
+                spent = std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - start).count();
+            }
+            fill.micros += spent;
+            if (done)
+            {
+                FinishFill(faction);
+            }
+        }
+    }
+
     if (_pendingHead < _pending.size() && _budgetLeft > 0)
     {
         DrainPending();
@@ -189,17 +212,10 @@ void MarketService::Step()
     _buying.SortQueue();
 }
 
-void MarketService::StepHouse(size_t faction)
+void MarketService::Snapshot(size_t faction, std::vector<Market::Listing>& listings) const
 {
-    auto start = std::chrono::steady_clock::now();
     Market::Faction const& fac = _data.factions[faction];
-    Market::Engine& engine = _engines[faction];
-    AuctionHouseId const houseId = HouseOf(faction);
-    AuctionHouseObject* house = sAuctionMgr->GetAuctionsMapByHouseId(houseId);
-    HouseStats stats;
-
-    // One pass over the house: every auction of an item the market knows, all owners.
-    std::vector<Market::Listing>& listings = engine.Listings();
+    AuctionHouseObject* house = sAuctionMgr->GetAuctionsMapByHouseId(HouseOf(faction));
     listings.clear();
     for (auto const& entry : house->GetAuctions())
     {
@@ -221,14 +237,133 @@ void MarketService::StepHouse(size_t faction)
         // player's listing of a vendor-stocked item only up to the vendor's price, so
         // vendor goods can't be relisted into the market's buyers for a profit.
         uint32 const guard = fac.items[itemIdx].vendorBuyGuard;
-        bool const playerOwned = !_roster.IsBot(listing.owner);
+        bool const botOwned = _roster.IsBot(listing.owner);
+        if (botOwned)
+        {
+            listing.flags |= Market::Listing::kBotOwned;
+        }
         if (auction->buyout > 0 && auction->owner != _buyerGuid && !_buying.IsQueued(auction->Id) &&
-            !(playerOwned && guard > 0 && listing.perUnit > guard))
+            !(!botOwned && guard > 0 && listing.perUnit > guard))
         {
             listing.flags |= Market::Listing::kBuyable;
         }
         listings.push_back(listing);
     }
+}
+
+bool MarketService::StartFill(size_t faction, std::string& note)
+{
+    if (!_ready)
+    {
+        note = _setupPending ? "the market sellers are still being set up" : "the market isn't running";
+        return false;
+    }
+    if (faction >= Market::kFactions || !_data.factions[faction].present)
+    {
+        note = "the market file has no data for that faction";
+        return false;
+    }
+    if (_roster.Slots(faction).empty())
+    {
+        note = "that faction has no sellers";
+        return false;
+    }
+    Fill& fill = _fills[faction];
+    if (fill.running)
+    {
+        note = "a fill of that house is already running";
+        return false;
+    }
+
+    auto start = std::chrono::steady_clock::now();
+    Snapshot(faction, _fillScratch);
+    std::vector<uint32> owners;
+    for (ObjectGuid const& guid : _roster.Slots(faction))
+    {
+        owners.push_back(guid.GetCounter());
+    }
+    time_t const now = GameTime::GetGameTime().count();
+    uint32 const steps = static_cast<uint32>(Market::FillRun::kFillHours / kStepHours + 0.5);
+    std::vector<uint8> weekdays(steps);
+    time_t const begin = now - static_cast<time_t>(Market::FillRun::kFillHours) * 3600;
+    for (uint32 k = 0; k < steps; ++k)
+    {
+        weekdays[k] = static_cast<uint8>(Weekday(begin + static_cast<time_t>(k * kStepHours * 3600)));
+    }
+    fill.run.Begin(
+        _data.factions[faction], _fillScratch, owners, weekdays, _scale, kStepHours, static_cast<uint64>(now));
+    fill.running = true;
+    fill.result = 0;
+    fill.micros =
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
+    note = Acore::StringFormat("fill started: {} simulated steps over the last {} h, {} real listings as competitors",
+        steps, Market::FillRun::kFillHours, _fillScratch.size());
+    return true;
+}
+
+void MarketService::FinishFill(size_t faction)
+{
+    Fill& fill = _fills[faction];
+    fill.running = false;
+    fill.run.Result(_fillScratch);
+
+    // The survivors go through the normal creation queue, each as one listing that
+    // keeps its simulated expiry (its posting duration still sets the deposit).
+    std::vector<ObjectGuid> const& slots = _roster.Slots(faction);
+    for (Market::Listing const& listing : _fillScratch)
+    {
+        Market::PostOrder order;
+        order.itemIdx = listing.itemIdx;
+        order.count = listing.count;
+        order.unitPrice = listing.perUnit;
+        order.listings = 1;
+        order.expireAt = listing.expire;
+        order.hours = 48;
+        for (uint32 slot = 0; slot < slots.size(); ++slot)
+        {
+            if (slots[slot].GetCounter() == listing.owner)
+            {
+                order.botSlot = slot;
+                break;
+            }
+        }
+        _pending.push_back({faction, order});
+    }
+    fill.result = static_cast<uint32>(_fillScratch.size());
+    LOG_INFO(
+        "module",
+        "AuctionSim: market fill house {}: {} simulated posts, {} sales, {} listings queued for creation, {} us "
+        "of simulation",
+        Market::FactionHouse(faction),
+        fill.run.Posted(),
+        fill.run.Sold(),
+        fill.result,
+        fill.micros);
+}
+
+MarketService::FillStatus MarketService::GetFillStatus(size_t faction) const
+{
+    Fill const& fill = _fills[faction];
+    FillStatus status;
+    status.running = fill.running;
+    status.stepsDone = fill.run.StepsDone();
+    status.stepsTotal = fill.run.StepsTotal();
+    status.result = fill.result;
+    status.micros = fill.micros;
+    return status;
+}
+
+void MarketService::StepHouse(size_t faction)
+{
+    auto start = std::chrono::steady_clock::now();
+    Market::Faction const& fac = _data.factions[faction];
+    Market::Engine& engine = _engines[faction];
+    AuctionHouseId const houseId = HouseOf(faction);
+    HouseStats stats;
+
+    // One pass over the house: every auction of an item the market knows, all owners.
+    std::vector<Market::Listing>& listings = engine.Listings();
+    Snapshot(faction, listings);
     stats.listingsSeen = static_cast<uint32>(listings.size());
     engine.BuildState(fac.items.size());
 
@@ -314,6 +449,13 @@ uint32 MarketService::CreateListings(
     AuctionHouseObject* house = sAuctionMgr->GetAuctionsMapByHouseId(houseId);
     time_t const now = GameTime::GetGameTime().count();
     uint32 const duration = order.hours * 3600;
+    // A fill survivor keeps its simulated expiry; one about to lapse isn't worth creating.
+    time_t const expireTime = order.expireAt ? static_cast<time_t>(order.expireAt) : now + duration;
+    if (expireTime <= now + 60)
+    {
+        order.listings = 0;
+        return 0;
+    }
 
     uint32 made = 0;
     while (order.listings > 0 && made < budget)
@@ -347,7 +489,7 @@ uint32 MarketService::CreateListings(
         // the sellers hold no gold, and every mail to them (sale proceeds with this
         // deposit back, or the expired item) is discarded.
         auction->deposit = AuctionHouseMgr::GetAuctionDeposit(houseEntry, duration, item, count);
-        auction->expire_time = now + duration;
+        auction->expire_time = expireTime;
         auction->auctionHouseEntry = houseEntry;
 
         item->SaveToDB(trans);
