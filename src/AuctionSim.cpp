@@ -16,24 +16,27 @@
 #include "Define.h"
 #include "Log.h"
 #include "Mail.h"
+#include "MarketService.h"
+#include "StringFormat.h"
 #include "ScriptMgr.h"
 #include "World.h"
 #include "WorldConfig.h"
 
 namespace
 {
-    // Collects every bot-owned auction on `houseId` that `shouldRemove` accepts, then
-    // deletes them in a second pass -- so the live house map is never mutated while it
-    // is being iterated, and it is never copied. Returns the number removed.
+    // Collects every module-owned auction on `houseId` (isOwner: the buyer bot, or any
+    // market seller) that `shouldRemove` accepts, then deletes them in a second pass --
+    // so the live house map is never mutated while it is being iterated, and it is never
+    // copied. Returns the number removed.
     //
     // An auction that already carries a bid is left alone: this path just drops the
     // row (no SendAuctionCancelledToBidderMail), so removing a bid-on auction would
     // strand the bidder's escrowed gold. Those clear themselves when they expire or
     // are won.
-    template <typename Predicate>
+    template <typename OwnerPredicate, typename Predicate>
     uint32 RemoveBotAuctionsIf(
         AuctionHouseId houseId,
-        ObjectGuid botGuid,
+        OwnerPredicate isOwner,
         SQLTransaction<CharacterDatabaseConnection>& trans,
         Predicate shouldRemove)
     {
@@ -43,7 +46,7 @@ namespace
         for (auto const& entry : house->GetAuctions())
         {
             AuctionEntry* auction = entry.second;
-            if (auction->owner == botGuid && auction->bid == 0 && shouldRemove(auction))
+            if (isOwner(auction->owner) && auction->bid == 0 && shouldRemove(auction))
             {
                 toRemove.push_back(auction);
             }
@@ -60,11 +63,10 @@ namespace
 
     bool IsBotCharacter(uint32 lowGuid)
     {
-        // Read the running bot's character id rather than re-parsing config: this
-        // hook fires for every mail delivered server-wide.
+        // Read the in-memory ids rather than re-parsing config: this hook fires for
+        // every mail delivered server-wide.
         AuctionSim* sim = AuctionSim::instance();
-        uint32 botLowGuid = sim ? sim->GetBotCharacterLowGuid() : 0;
-        return botLowGuid != 0 && lowGuid == botLowGuid;
+        return sim && sim->IsModuleCharacter(lowGuid);
     }
 }
 
@@ -158,6 +160,16 @@ void AuctionSim::OnStartup()
         }
     }
 
+    // Any mode: market sellers from an earlier Market run keep their mail swallowed.
+    marketRoster.LoadExisting();
+
+    // Market mode's tables load whether or not the module is enabled, so enabling from
+    // the addon needs no restart -- and a bad file is reported at once.
+    if (config && config->marketMode)
+    {
+        LoadMarketData();
+    }
+
     if (!isEnabled)
     {
         // The addon still works while disabled (replies are self-whispers), so a GM
@@ -173,6 +185,13 @@ void AuctionSim::OnStartup()
         return;
     }
 
+    if (config->marketMode && !marketData)
+    {
+        LOG_ERROR("module", "AuctionSim: disabling -- Market mode needs a current auctionsim_market.dat");
+        isEnabled = false;
+        return;
+    }
+
     if (!StartOrReloadBot(false))  // config is fresh at boot; no reload
     {
         isEnabled = false;
@@ -181,10 +200,101 @@ void AuctionSim::OnStartup()
 
     if (this->startupScan)
     {
-        ScanAuctions(AuctionHouseId::Alliance);
-        ScanAuctions(AuctionHouseId::Horde);
+        RunScan();
         LOG_INFO("module", "AuctionSim: Startup complete");
     }
+}
+
+bool AuctionSim::LoadMarketData()
+{
+    std::string path = sConfigMgr->GetConfigPath() + "/modules/auctionsim_market.dat";
+    auto data = std::make_unique<Market::Data>();
+    std::string error;
+    uint32 found = 0;
+    if (!MarketService::LoadFile(path, *config, *data, error, found))
+    {
+        _marketUnavailable = true;
+        _marketHaveVer = found;
+        _marketError = error;
+        marketData.reset();
+        LOG_ERROR("module", "AuctionSim: Market mode can't run -- auctionsim_market.dat: {}", error);
+        return false;
+    }
+    _marketUnavailable = false;
+    _marketHaveVer = found;
+    _marketError.clear();
+    marketData = std::move(data);
+    return true;
+}
+
+bool AuctionSim::IsModuleCharacter(uint32 lowGuid) const
+{
+    if (lowGuid == 0)
+    {
+        return false;
+    }
+    return lowGuid == GetBotCharacterLowGuid() || marketRoster.IsBot(lowGuid);
+}
+
+void AuctionSim::RunScan()
+{
+    if (market)
+    {
+        market->Step();
+        return;
+    }
+    ScanAuctions(AuctionHouseId::Alliance);
+    ScanAuctions(AuctionHouseId::Horde);
+}
+
+bool AuctionSim::ReloadMarket(std::string& note)
+{
+    if (!sConfigMgr->Reload())
+    {
+        note = "couldn't reload auctionsim.conf";
+        return false;
+    }
+    bool datOk = true;
+    auto fresh = std::make_unique<ASConfig>(sConfigMgr->GetConfigPath() + "/modules/auctionsim.dat", datOk);
+    if (!datOk)
+    {
+        note = "auctionsim.dat failed to load; nothing changed";
+        return false;
+    }
+    if (!fresh->marketMode)
+    {
+        note = "AuctionSim.Mode is Replay in auctionsim.conf; restart to switch modes";
+        return false;
+    }
+    if (!IsMarketMode())
+    {
+        note = "the module started in Replay mode; restart to switch modes";
+        return false;
+    }
+
+    // The services hold references into marketData and config: drop the market first.
+    market.reset();
+    config->marketBots = fresh->marketBots;
+    config->marketScale = fresh->marketScale;
+    if (!LoadMarketData())
+    {
+        note = Acore::StringFormat("auctionsim_market.dat: {}", _marketError);
+        isEnabled = false;
+        return false;
+    }
+    if (!isEnabled)
+    {
+        note = "market data reloaded; the module is disabled";
+        return true;
+    }
+    if (!StartOrReloadBot(false))
+    {
+        note = "market data reloaded but the market couldn't start; see the server log";
+        isEnabled = false;
+        return false;
+    }
+    note = market && !market->IsReady() ? market->SetupNote() : "market reloaded";
+    return true;
 }
 
 bool AuctionSim::StartOrReloadBot(bool reloadConfig)
@@ -209,6 +319,13 @@ bool AuctionSim::StartOrReloadBot(bool reloadConfig)
         return false;
     }
 
+    // Market mode without its tables never starts (the GM is told at login).
+    if (config->marketMode && !marketData)
+    {
+        LOG_ERROR("module", "AuctionSim: Market mode needs a current auctionsim_market.dat");
+        return false;
+    }
+
     // Throwaway flag: a bad/unset id must not clear the module's isEnabled or kill a
     // running bot.
     bool built = true;
@@ -225,10 +342,27 @@ bool AuctionSim::StartOrReloadBot(bool reloadConfig)
         retiredBots.push_back(std::move(bot));
     }
     bot = std::move(newBot);
+    market.reset();  // holds a reference to the old buying service
     listingService = std::make_unique<AuctionListingService>(*bot, *config);
     buyingService = std::make_unique<AuctionBuyingService>(*bot);
 
-    LOG_INFO("module", "AuctionSim: bot active (character {})", bot->GetCharacterID());
+    if (config->marketMode)
+    {
+        market = std::make_unique<MarketService>(*marketData, marketRoster, *buyingService, bot->GetPlayer()->GetGUID());
+        market->SetScale(config->marketScale);
+        if (market->SetupBots(config->marketBots) == Market::BotRoster::Result::Failed)
+        {
+            LOG_ERROR("module", "AuctionSim: market sellers couldn't be set up: {}", market->SetupNote());
+            market.reset();
+            return false;
+        }
+    }
+
+    LOG_INFO(
+        "module",
+        "AuctionSim: bot active (character {}), {} mode",
+        bot->GetCharacterID(),
+        ASConfig::ModeName(config->marketMode));
     return true;
 }
 
@@ -241,9 +375,13 @@ void AuctionSim::OnUpdate(uint32 diff)
 
     if (scanTimer >= AuctionPricing::kScanIntervalSeconds * 1000)
     {
-        ScanAuctions(AuctionHouseId::Alliance);
-        ScanAuctions(AuctionHouseId::Horde);
+        RunScan();
         scanTimer = 0;
+    }
+
+    if (market)
+    {
+        market->Update(diff);
     }
 
     buyingService->ProcessDueQueue();
@@ -367,6 +505,10 @@ std::vector<AuctionSimTests::TestResult> AuctionSim::RunTests()
 {
     std::vector<AuctionSimTests::TestResult> results = AuctionSimTests::RunLogicTests(*bot, *config);
 
+    std::vector<AuctionSimTests::TestResult> marketResults =
+        AuctionSimTests::RunMarketTests(*config, marketData.get(), market.get());
+    results.insert(results.end(), marketResults.begin(), marketResults.end());
+
     results.push_back(
         AuctionSimTests::RunLiveListingTest(*bot, *config, *listingService, AuctionHouseId::Alliance));
     results.push_back(AuctionSimTests::RunLiveListingTest(*bot, *config, *listingService, AuctionHouseId::Horde));
@@ -407,7 +549,7 @@ uint32 AuctionSim::CleanOverCapAuctions()
         return 0;
     }
 
-    ObjectGuid const botPlayerGUID = bot->GetPlayer()->GetGUID();
+    auto isOwner = [this](ObjectGuid owner) { return IsModuleCharacter(owner.GetCounter()); };
     auto trans = CharacterDatabase.BeginTransaction();
     uint32 removedCount = 0;
 
@@ -423,7 +565,7 @@ uint32 AuctionSim::CleanOverCapAuctions()
 
     for (AuctionHouseId houseId : {AuctionHouseId::Alliance, AuctionHouseId::Horde})
     {
-        removedCount += RemoveBotAuctionsIf(houseId, botPlayerGUID, trans, isOverCap);
+        removedCount += RemoveBotAuctionsIf(houseId, isOwner, trans, isOverCap);
     }
 
     CharacterDatabase.CommitTransaction(trans);
@@ -438,12 +580,12 @@ void AuctionSim::DeleteAuctions()
         return;
     }
 
-    ObjectGuid const botPlayerGUID = bot->GetPlayer()->GetGUID();
+    auto isOwner = [this](ObjectGuid owner) { return IsModuleCharacter(owner.GetCounter()); };
     auto trans = CharacterDatabase.BeginTransaction();
 
     for (AuctionHouseId houseId : {AuctionHouseId::Alliance, AuctionHouseId::Horde})
     {
-        RemoveBotAuctionsIf(houseId, botPlayerGUID, trans, [](AuctionEntry const*) { return true; });
+        RemoveBotAuctionsIf(houseId, isOwner, trans, [](AuctionEntry const*) { return true; });
     }
 
     CharacterDatabase.CommitTransaction(trans);
@@ -469,8 +611,19 @@ void AuctionSimMailManager::OnBeforeMailDraftSendMailTo(
     }
 }
 
+void AuctionSimMarketGuard::OnPlayerLogin(Player* player)
+{
+    AuctionSim* sim = AuctionSim::instance();
+    if (sim && player && player->GetSession() && sim->IsMarketBot(player->GetGUID().GetCounter()))
+    {
+        LOG_WARN("module", "AuctionSim: kicked a login on market seller {}", player->GetName());
+        player->GetSession()->KickPlayer("AuctionSim market seller");
+    }
+}
+
 void AddAuctionSimScripts()
 {
     new AuctionSim();
     new AuctionSimMailManager();
+    new AuctionSimMarketGuard();
 }

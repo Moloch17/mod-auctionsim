@@ -1,5 +1,6 @@
 #include "ASConfig.h"
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -64,6 +65,20 @@ ASConfig::ASConfig(std::string const& filepath, bool& outLoaded)
 {
     this->maxRequiredLevel = sConfigMgr->GetOption<uint32>("AuctionSim.MaxRequiredLevel", 0);
     this->maxItemLevel = sConfigMgr->GetOption<uint32>("AuctionSim.MaxItemLevel", 0);
+
+    std::string mode = sConfigMgr->GetOption<std::string>("AuctionSim.Mode", "Replay");
+    if (!ParseMode(mode, this->marketMode))
+    {
+        LOG_ERROR("module", "AuctionSim: AuctionSim.Mode '{}' is neither Replay nor Market; using Replay", mode);
+        this->marketMode = false;
+    }
+    this->marketBots = sConfigMgr->GetOption<uint32>("AuctionSim.Market.Bots", 100);
+    this->marketScale = sConfigMgr->GetOption<float>("AuctionSim.Market.Scale", 0.1f);
+    if (!(this->marketScale >= 0.0f))
+    {
+        LOG_ERROR("module", "AuctionSim: AuctionSim.Market.Scale must be >= 0; using 0.1");
+        this->marketScale = 0.1f;
+    }
 
     // Independent of auctionsim.dat -- load it even on the early-return paths below so
     // the buy-side guard always has its whitelist.
@@ -173,6 +188,29 @@ ASConfig::ASConfig(std::string const& filepath, bool& outLoaded)
         depthProfiles);
 
     LoadMasks();
+}
+
+bool ASConfig::ParseMode(std::string_view text, bool& outMarket)
+{
+    std::string lower;
+    for (char c : text)
+    {
+        if (c != ' ' && c != '\t' && c != '\r')
+        {
+            lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+    }
+    if (lower == "replay")
+    {
+        outMarket = false;
+        return true;
+    }
+    if (lower == "market")
+    {
+        outMarket = true;
+        return true;
+    }
+    return false;
 }
 
 bool ASConfig::ParseHeaderLine(std::string const& line, size_t& outItemRows, size_t& outCategoryRows)

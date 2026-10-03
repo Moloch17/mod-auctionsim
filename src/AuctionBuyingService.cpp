@@ -186,6 +186,16 @@ size_t AuctionBuyingService::DrainQueue()
     return ran;
 }
 
+bool AuctionBuyingService::EnqueueBuyout(uint32 auctionId, AuctionHouseId houseId, time_t buyTime)
+{
+    if (!_queuedAuctionIds.insert(auctionId).second)
+    {
+        return false;
+    }
+    _queue.push_back({auctionId, houseId, buyTime, QueuedPurchase::Action::Buyout, 0});
+    return true;
+}
+
 void AuctionBuyingService::EnqueueForTest(AuctionEntry* auction, time_t buyTime)
 {
     _queue.push_back(

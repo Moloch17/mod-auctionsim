@@ -42,6 +42,18 @@ public:
     uint32 maxRequiredLevel = 0;
     uint32 maxItemLevel = 0;
 
+    // AuctionSim.Mode: Replay (false, the default) replays auctionsim.dat's scanned
+    // market; Market (true) runs the learned market from auctionsim_market.dat.
+    bool marketMode = false;
+    // AuctionSim.Market.Bots: named sellers per faction (capped by the file's names).
+    uint32 marketBots = 100;
+    // AuctionSim.Market.Scale: market size as a fraction of Lordaeron's.
+    float marketScale = 0.1f;
+
+    // "Replay" / "Market", any case. False on anything else.
+    static bool ParseMode(std::string_view text, bool& outMarket);
+    static char const* ModeName(bool market) { return market ? "Market" : "Replay"; }
+
     // Every item id stocked by at least one vendor (from npc_vendor). The buy-side
     // vendor-buy-price guard only applies to items in this set: an
     // ItemTemplate::BuyPrice left on an item that no vendor actually sells is stale
