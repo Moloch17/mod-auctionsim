@@ -8,6 +8,22 @@
 #include "Log.h"
 #include "Mail.h"
 
+namespace
+{
+    // Caps every bid the bot places, checked when it is queued and again when it
+    // executes. A bid at or over the buyout is a buyout to core (and leaves players
+    // nothing to bid), so it must stay strictly below; the vendor cap closes the
+    // same gold-cheese vector the buyout path guards against.
+    bool IsWithinBidCaps(AuctionEntry const* auction, uint32 nextBid, uint32 nextBidPerUnit, uint32 vendorBuyPrice)
+    {
+        if (auction->buyout > 0 && nextBid >= auction->buyout)
+        {
+            return false;
+        }
+        return AuctionPricing::IsWithinVendorBuyPrice(nextBidPerUnit, vendorBuyPrice);
+    }
+}
+
 AuctionBuyingService::AuctionBuyingService(Bot& bot) : _bot(bot) {}
 
 void AuctionBuyingService::RollTolerance() { _tolerance = AuctionPricing::RollBuyTolerance(); }
@@ -34,7 +50,7 @@ void AuctionBuyingService::ConsiderForPurchase(
     _queuedAuctionIds.insert(auction->Id);
 }
 
-void AuctionBuyingService::ConsiderForBid(AuctionEntry* auction, uint32 marketPrice)
+void AuctionBuyingService::ConsiderForBid(AuctionEntry* auction, uint32 marketPrice, uint32 vendorBuyPrice)
 {
     if (_queuedAuctionIds.count(auction->Id) > 0)
     {
@@ -46,6 +62,11 @@ void AuctionBuyingService::ConsiderForBid(AuctionEntry* auction, uint32 marketPr
     uint32 nextBid = auction->bid + auction->GetAuctionOutBid();
     uint32 nextBidPerUnit = nextBid / std::max<uint32>(1, auction->itemCount);
 
+    if (!IsWithinBidCaps(auction, nextBid, nextBidPerUnit, vendorBuyPrice))
+    {
+        return;
+    }
+
     // Hard gate + per-scan eagerness roll (see ShouldBidAtPrice). Both keep every
     // outbid the bot places below the item's market value.
     if (!AuctionPricing::ShouldBidAtPrice(nextBidPerUnit, marketPrice))
@@ -56,7 +77,7 @@ void AuctionBuyingService::ConsiderForBid(AuctionEntry* auction, uint32 marketPr
     time_t now = GameTime::GetGameTime().count();
     time_t buyTime = AuctionPricing::RollBuyTime(auction->expire_time, now);
     _queue.push_back(
-        {auction->Id, auction->GetHouseId(), buyTime, QueuedPurchase::Action::Bid, marketPrice});
+        {auction->Id, auction->GetHouseId(), buyTime, QueuedPurchase::Action::Bid, marketPrice, vendorBuyPrice});
     _queuedAuctionIds.insert(auction->Id);
 }
 
@@ -106,10 +127,12 @@ void AuctionBuyingService::EnqueueForTest(AuctionEntry* auction, time_t buyTime)
     _queuedAuctionIds.insert(auction->Id);
 }
 
-void AuctionBuyingService::EnqueueBidForTest(AuctionEntry* auction, time_t buyTime, uint32 marketCeilingPerUnit)
+void AuctionBuyingService::EnqueueBidForTest(
+    AuctionEntry* auction, time_t buyTime, uint32 marketCeilingPerUnit, uint32 vendorBuyPrice)
 {
     _queue.push_back(
-        {auction->Id, auction->GetHouseId(), buyTime, QueuedPurchase::Action::Bid, marketCeilingPerUnit});
+        {auction->Id, auction->GetHouseId(), buyTime, QueuedPurchase::Action::Bid, marketCeilingPerUnit,
+         vendorBuyPrice});
     _queuedAuctionIds.insert(auction->Id);
 }
 
@@ -143,7 +166,15 @@ void AuctionBuyingService::BuyItem(QueuedPurchase const& entry)
 
     auto trans = CharacterDatabase.BeginTransaction();
 
-    auction->bidder = _bot.GetPlayerRef().GetGUID();
+    // A player holding the high bid gets it back, as core's own buyout path does.
+    // Must run before the mutation below: it refunds the current auction->bid.
+    Player* botPlayer = &_bot.GetPlayerRef();
+    if (auction->bidder && auction->bidder != botPlayer->GetGUID())
+    {
+        sAuctionMgr->SendAuctionOutbiddedMail(auction, auction->buyout, botPlayer, trans);
+    }
+
+    auction->bidder = botPlayer->GetGUID();
     auction->bid = auction->buyout;
     sAuctionMgr->SendAuctionSuccessfulMail(auction, trans);
     auction->DeleteFromDB(trans);
@@ -178,6 +209,10 @@ void AuctionBuyingService::PlaceBid(QueuedPurchase const& entry)
     if (nextBidPerUnit >= entry.marketCeilingPerUnit)
     {
         return;  // a rival pushed the price past our walk-away point
+    }
+    if (!IsWithinBidCaps(auction, nextBid, nextBidPerUnit, entry.vendorBuyPrice))
+    {
+        return;  // a rival pushed the next bid up to the buyout or past the vendor price
     }
 
     auto trans = CharacterDatabase.BeginTransaction();

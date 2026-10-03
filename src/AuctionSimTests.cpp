@@ -713,7 +713,7 @@ namespace
         testService.RollTolerance();
         for (int i = 0; i < 50; i++)
         {
-            testService.ConsiderForBid(testAuction, 100);  // market far below the next bid
+            testService.ConsiderForBid(testAuction, 100, 0);  // market far below the next bid
         }
         bool ok = testService.QueueSize() == 0;
 
@@ -726,6 +726,55 @@ namespace
         return Pass("Bid queue hard gate");
     }
 
+    TestResult TestBidQueueRespectsBuyoutAndVendorCaps(Bot& bot)
+    {
+        // Next bid is 1000 + 50 = 1050, well under a 1'000'000 market, so only the
+        // caps can stop it. 50 rolls each so the per-scan chance can't hide a miss.
+        AuctionEntry* testAuction = MakeTestAuctionEntry(0xFFFFFFE3, GameTime::GetGameTime().count() + 100000);
+        testAuction->itemCount = 1;
+        testAuction->bid = 1000;
+        testAuction->bidder = ObjectGuid::Create<HighGuid::Player>(0x00F00004u);
+
+        AuctionBuyingService testService(bot);
+        testService.RollTolerance();
+
+        testAuction->buyout = 1050;  // the next bid would reach the buyout
+        for (int i = 0; i < 50; i++)
+        {
+            testService.ConsiderForBid(testAuction, 1'000'000, 0);
+        }
+        bool buyoutCapped = testService.QueueSize() == 0;
+
+        testAuction->buyout = 0;  // bid-only; the vendor sells it for less than the next bid
+        for (int i = 0; i < 50; i++)
+        {
+            testService.ConsiderForBid(testAuction, 1'000'000, 1049);
+        }
+        bool vendorCapped = testService.QueueSize() == 0;
+
+        for (int i = 0; i < 50 && testService.QueueSize() == 0; i++)
+        {
+            testService.ConsiderForBid(testAuction, 1'000'000, 1050);  // equal to vendor price is allowed
+        }
+        bool allowedAtVendor = testService.QueueSize() == 1;
+
+        delete testAuction;
+
+        if (!buyoutCapped)
+        {
+            return Fail("Bid queue respects caps", "a bid reaching the buyout was queued");
+        }
+        if (!vendorCapped)
+        {
+            return Fail("Bid queue respects caps", "a bid above the vendor price was queued");
+        }
+        if (!allowedAtVendor)
+        {
+            return Fail("Bid queue respects caps", "a bid at the vendor price was never queued");
+        }
+        return Pass("Bid queue respects caps");
+    }
+
     TestResult TestBidQueueSharesBuyoutDedupe(Bot& bot)
     {
         AuctionEntry* testAuction = MakeTestAuctionEntry(0xFFFFFFE1, GameTime::GetGameTime().count() + 100000);
@@ -736,7 +785,7 @@ namespace
         AuctionBuyingService testService(bot);
         testService.RollTolerance();
         testService.ConsiderForPurchase(testAuction, 1, 1'000'000, 2'000'000);  // always-buy
-        testService.ConsiderForBid(testAuction, 1'000'000);                     // must be a no-op
+        testService.ConsiderForBid(testAuction, 1'000'000, 0);                  // must be a no-op
         bool ok = testService.QueueSize() == 1;
 
         delete testAuction;
@@ -914,6 +963,7 @@ namespace AuctionSimTests
             TestBuyQueueDedupesRescan(bot),
             TestBuyQueueNotYetDue(bot),
             TestBidQueueHardGate(bot),
+            TestBidQueueRespectsBuyoutAndVendorCaps(bot),
             TestBidQueueSharesBuyoutDedupe(bot),
             TestProcessDueQueueBidRevalidatesMissing(bot),
             TestDrainQueueRunsAllActions(bot),

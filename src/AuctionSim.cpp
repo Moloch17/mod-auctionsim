@@ -298,20 +298,20 @@ void AuctionSim::ScanAuctions(AuctionHouseId _AuctionHouseId)
             continue;
         }
 
+        // Never pay more per unit than it would cost to buy the item straight from a
+        // vendor -- by buyout or by bid. The cap only applies when a vendor actually
+        // stocks the item (npc_vendor): a BuyPrice left on an item no vendor sells is
+        // stale DB data, not a real floor (0 disables the check).
+        uint32 vendorBuyPrice = (config->IsVendorSold(auction->item_template) && proto->BuyPrice > 0)
+            ? static_cast<uint32>(proto->BuyPrice)
+            : 0;
+
         // Buyout consideration -- only for real buyout auctions the bot doesn't own.
         // A bid-only auction has buyout == 0, which would give pricePerItem == 0,
         // pass "<= marketPrice", and get "bought" for nothing; guard against that.
         if (!isBotOwned && auction->buyout > 0)
         {
             uint32 pricePerItem = auction->buyout / auction->itemCount;
-
-            // Never pay more per unit than it would cost to buy the item straight
-            // from a vendor. The cap only applies when a vendor actually stocks the
-            // item (npc_vendor): a BuyPrice left on an item no vendor sells is stale
-            // DB data, not a real floor (0 disables the check).
-            uint32 vendorBuyPrice = (config->IsVendorSold(auction->item_template) && proto->BuyPrice > 0)
-                ? static_cast<uint32>(proto->BuyPrice)
-                : 0;
             if (AuctionPricing::IsWithinVendorBuyPrice(pricePerItem, vendorBuyPrice))
             {
                 buyingService->ConsiderForPurchase(
@@ -325,7 +325,7 @@ void AuctionSim::ScanAuctions(AuctionHouseId _AuctionHouseId)
         // auction an acceptable buyout still wins over an outbid.
         if (auction->bid > 0 && auction->bidder && auction->bidder != botGuid)
         {
-            buyingService->ConsiderForBid(auction, scannedItem->GetMarketPrice());
+            buyingService->ConsiderForBid(auction, scannedItem->GetMarketPrice(), vendorBuyPrice);
         }
     }
 
