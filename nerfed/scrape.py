@@ -56,7 +56,8 @@ DAT = HERE.parent / "data" / "auctionsim.dat"
 ITEM_LINK_RE = re.compile(r"/item/index\?id=(\d+)")
 TOTAL_RE = re.compile(r"Showing <b>[^<]*</b> of <b>([\d,]+)</b>")
 PER_PAGE = 50  # the site ignores larger per-page values
-RETRY_STATUS = {429, 500, 502, 503, 504, 520, 521, 522, 524}
+RETRY_STATUS = {429, 502, 503, 504, 520, 521, 522, 524}  # site-wide trouble: every worker pauses
+PAGE_ERROR_TRIES = 3  # HTTP 500 is one broken page (item 32897 always is): retry briefly, then skip
 
 
 class Client:
@@ -72,6 +73,7 @@ class Client:
         return self.local.s
 
     def get(self, path, params):
+        page_errors = 0
         for attempt in range(8):
             wait = self.resume_at - time.time()
             if wait > 0:
@@ -80,6 +82,12 @@ class Client:
                 r = self.session().get(SITE + path, params=params, timeout=60)
                 if r.status_code == 200:
                     return r.content
+                if r.status_code == 500:
+                    page_errors += 1
+                    if page_errors >= PAGE_ERROR_TRIES:
+                        break
+                    time.sleep(10)
+                    continue
                 if r.status_code not in RETRY_STATUS:
                     raise RuntimeError(f"{path} {params}: HTTP {r.status_code}")
                 reason = f"HTTP {r.status_code}"
@@ -138,10 +146,17 @@ def scrape(client, pool, name, refresh):
 
     todo = [i for i in sorted(ids) if not (out / "items" / f"{i}.html.gz").exists()]
     counts = {"done": 0, "found": 0}
+    failed = []
     start = time.time()
 
     def item_page(item):
-        html = client.get("/item/index", {"id": item, "faction": faction, "realm": REALM})
+        try:
+            html = client.get("/item/index", {"id": item, "faction": faction, "realm": REALM})
+        except RuntimeError as e:
+            # Not saved, so the next run tries it again.
+            print(f"\n{e}, skipped", file=sys.stderr)
+            failed.append(item)
+            return
         save(out / "items" / f"{item}.html.gz", html)
         counts["done"] += 1
         counts["found"] += b"var all_data" in html
@@ -152,7 +167,9 @@ def scrape(client, pool, name, refresh):
 
     for _ in pool.map(item_page, todo):
         pass
-    print(f"\n{name}: {len(ids) - len(todo)} already on disk, fetched {counts['done']}")
+    (out / "failed.txt").write_text("".join(f"{i}\n" for i in sorted(failed)))
+    print(f"\n{name}: {len(ids) - len(todo)} already on disk, fetched {counts['done']},"
+          f" failed {len(failed)} (failed.txt; retried next run)")
 
 
 def main():
