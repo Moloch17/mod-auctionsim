@@ -97,7 +97,8 @@ namespace Market
     {
         Item const& item = fac.items[row.itemIdx];
         double draw = row.stack >= 0 ? QuantileDraw(fac.stacks[row.stack], rng.Uniform()) : 0.0;
-        double count = std::floor(static_cast<double>(item.conv) * std::exp(draw) + 0.5);
+        // nearbyint: round half to even, as the reference's Python round() does.
+        double count = std::nearbyint(static_cast<double>(item.conv) * std::exp(draw));
         count = std::clamp(count, 1.0, static_cast<double>(item.maxc));
         return static_cast<uint32>(count);
     }

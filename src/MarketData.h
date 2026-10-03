@@ -57,10 +57,14 @@ namespace Market
     // CURVE row: w[b] = share of buyers paying at least kRatioEdges[b] x ref.
     using Curve = std::array<float, kCurveBins>;
 
-    // Reservation as a ratio to ref: bin b with probability w[b] - w[b+1] (w[9] = 0),
-    // picked as the largest b with uBin < w[b] (b = 0 when none is), then uniform in
-    // [kRatioEdges[b], kRatioEdges[b+1]) by uIn. Always in [0.25, 5.0].
-    double ReservationRatio(Curve const& w, double uBin, double uIn);
+    // The bin masses w[b] - w[b+1] (w[9] = 0, negatives clipped to 0), normalised and
+    // accumulated: what ReservationRatio samples from. Parse stores curves this way.
+    Curve CumulativeCurve(Curve const& w);
+
+    // Reservation as a ratio to ref, as ml/s6_market_sim.py draws it: bin b = the number
+    // of cumulative masses below uBin (at most 8), then uniform in
+    // [kRatioEdges[b], kRatioEdges[b+1]) by uIn. Always in [0.25, 5.0).
+    double ReservationRatio(Curve const& cumulative, double uBin, double uIn);
 
     // --- Tables ----------------------------------------------------------------------
     struct Item
@@ -126,7 +130,7 @@ namespace Market
         std::vector<Item> items;
         std::unordered_map<uint32, uint32> itemIndex;  // itemId -> index into items
         std::vector<Reagent> craft;
-        std::vector<Curve> curves;
+        std::vector<Curve> curves;  // cumulative (CumulativeCurve), not the file's shares
         std::vector<std::array<float, kWeekdays>> weekdays;
         std::vector<PolicyRow> policies;
         std::unordered_map<uint64, uint32> policyIndex;  // PolicyKey -> index into policies

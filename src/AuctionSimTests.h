@@ -59,5 +59,6 @@ namespace AuctionSimTests
     // sampling, scale math, pricing floors, buyers, name skipping) plus a timed
     // Lordaeron-sized synthetic step. With the real file loaded / the market running,
     // also checks those (`loaded` / `market` may be null).
-    std::vector<TestResult> RunMarketTests(ASConfig const& config, Market::Data const* loaded, MarketService const* market);
+    std::vector<TestResult> RunMarketTests(
+        ASConfig const& config, Market::Data const* loaded, MarketService const* market);
 }

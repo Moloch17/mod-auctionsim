@@ -348,7 +348,8 @@ bool AuctionSim::StartOrReloadBot(bool reloadConfig)
 
     if (config->marketMode)
     {
-        market = std::make_unique<MarketService>(*marketData, marketRoster, *buyingService, bot->GetPlayer()->GetGUID());
+        market = std::make_unique<MarketService>(
+            *marketData, marketRoster, *buyingService, bot->GetPlayer()->GetGUID());
         market->SetScale(config->marketScale);
         if (market->SetupBots(config->marketBots) == Market::BotRoster::Result::Failed)
         {

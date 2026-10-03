@@ -1518,7 +1518,7 @@ namespace
     {
         std::string const name = "Market reservation sampling";
         Market::Rng rng(12345);
-        Market::Curve full = {1, 0.9f, 0.8f, 0.7f, 0.5f, 0.3f, 0.2f, 0.1f, 0.05f};
+        Market::Curve full = Market::CumulativeCurve({1, 0.9f, 0.8f, 0.7f, 0.5f, 0.3f, 0.2f, 0.1f, 0.05f});
         for (int i = 0; i < 20000; ++i)
         {
             double r = Market::ReservationRatio(full, rng.Uniform(), rng.Uniform());
@@ -1528,7 +1528,7 @@ namespace
             }
         }
         // Everyone pays at least 0.85 x ref, nobody 1.0: all draws in [0.85, 1.0).
-        Market::Curve narrow = {1, 1, 1, 1, 0, 0, 0, 0, 0};
+        Market::Curve narrow = Market::CumulativeCurve({1, 1, 1, 1, 0, 0, 0, 0, 0});
         for (int i = 0; i < 2000; ++i)
         {
             double r = Market::ReservationRatio(narrow, rng.Uniform(), rng.Uniform());
@@ -1538,7 +1538,7 @@ namespace
             }
         }
         // Half the buyers in bin 0, half in bin 1.
-        Market::Curve half = {1, 0.5f, 0, 0, 0, 0, 0, 0, 0};
+        Market::Curve half = Market::CumulativeCurve({1, 0.5f, 0, 0, 0, 0, 0, 0, 0});
         int lowBin = 0;
         int const draws = 20000;
         for (int i = 0; i < draws; ++i)
@@ -1842,7 +1842,8 @@ namespace
             long long avg = std::chrono::duration_cast<std::chrono::microseconds>(
                 std::chrono::steady_clock::now() - start).count() / load.steps;
             worstAvg = std::max(worstAvg, avg);
-            detail += Acore::StringFormat("; scale {:g}, {} listings: {} us/step ({} posts, {} buyers, {} buys per step)",
+            detail += Acore::StringFormat(
+                "; scale {:g}, {} listings: {} us/step ({} posts, {} buyers, {} buys per step)",
                 load.scale, load.listings, avg, posts / load.steps, buyers / load.steps, bought / load.steps);
         }
 
@@ -1870,7 +1871,9 @@ namespace
                 return Fail(name, Acore::StringFormat("faction {} has no items, basket or bots",
                     Market::FactionHouse(slot)));
             }
-            detail += Acore::StringFormat("{}faction {}: {} items, {} basket rows, {} names", detail.empty() ? "" : "; ",
+            detail += Acore::StringFormat(
+                "{}faction {}: {} items, {} basket rows, {} names",
+                detail.empty() ? "" : "; ",
                 Market::FactionHouse(slot), fac.items.size(), fac.basket.size(), fac.bots.size());
             if (market && market->IsReady())
             {
@@ -2214,7 +2217,8 @@ namespace AuctionSimTests
                 proto->ItemLevel));
     }
 
-    std::vector<TestResult> RunMarketTests(ASConfig const& config, Market::Data const* loaded, MarketService const* market)
+    std::vector<TestResult> RunMarketTests(
+        ASConfig const& config, Market::Data const* loaded, MarketService const* market)
     {
         std::vector<TestResult> results = {
             TestMarketParse(),

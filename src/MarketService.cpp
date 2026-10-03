@@ -97,7 +97,11 @@ bool MarketService::LoadFile(
 
 MarketService::MarketService(
     Market::Data& data, Market::BotRoster& roster, AuctionBuyingService& buying, ObjectGuid buyerGuid)
-    : _data(data), _roster(roster), _buying(buying), _buyerGuid(buyerGuid), _rng((static_cast<uint64>(rand32()) << 32) | rand32())
+    : _data(data),
+      _roster(roster),
+      _buying(buying),
+      _buyerGuid(buyerGuid),
+      _rng((static_cast<uint64>(rand32()) << 32) | rand32())
 {
 }
 
@@ -141,10 +145,11 @@ void MarketService::Update(uint32 diff)
         }
     }
 
-    if (_pendingHead < _pending.size())
+    if (_pendingHead < _pending.size() && _budgetLeft > 0)
     {
         DrainPending();
     }
+    _budgetLeft = kMaxListingsPerTick;  // a fresh budget for the next tick's step and drain
 }
 
 size_t MarketService::PendingListings() const
@@ -228,11 +233,10 @@ void MarketService::StepHouse(size_t faction)
     if (!_orders.empty())
     {
         auto trans = CharacterDatabase.BeginTransaction();
-        uint32 budget = kMaxListingsPerTick;
         for (Market::PostOrder& order : _orders)
         {
-            uint32 made = budget > 0 ? CreateListings(faction, order, budget, trans, true) : 0;
-            budget -= made;
+            uint32 made = _budgetLeft > 0 ? CreateListings(faction, order, _budgetLeft, trans, true) : 0;
+            _budgetLeft -= made;
             stats.listingsCreated += made;
             if (order.listings > 0)
             {
@@ -365,11 +369,10 @@ uint32 MarketService::CreateListings(
 void MarketService::DrainPending()
 {
     auto trans = CharacterDatabase.BeginTransaction();
-    uint32 budget = kMaxListingsPerTick;
-    while (_pendingHead < _pending.size() && budget > 0)
+    while (_pendingHead < _pending.size() && _budgetLeft > 0)
     {
         PendingPost& post = _pending[_pendingHead];
-        budget -= CreateListings(post.faction, post.order, budget, trans, false);
+        _budgetLeft -= CreateListings(post.faction, post.order, _budgetLeft, trans, false);
         if (post.order.listings == 0)
         {
             ++_pendingHead;

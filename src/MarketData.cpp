@@ -152,17 +152,36 @@ namespace Market
         return q[hi - 1] + t * (q[hi] - q[hi - 1]);
     }
 
-    double ReservationRatio(Curve const& w, double uBin, double uIn)
+    Curve CumulativeCurve(Curve const& w)
+    {
+        Curve mass{};
+        double total = 0.0;
+        for (size_t b = 0; b < kCurveBins; ++b)
+        {
+            double next = b + 1 < kCurveBins ? w[b + 1] : 0.0;
+            double m = std::max(0.0, static_cast<double>(w[b]) - next);
+            mass[b] = static_cast<float>(m);
+            total += m;
+        }
+        total = std::max(total, 1e-12);
+        Curve cumulative{};
+        double running = 0.0;
+        for (size_t b = 0; b < kCurveBins; ++b)
+        {
+            running += mass[b] / total;
+            cumulative[b] = static_cast<float>(running);
+        }
+        return cumulative;
+    }
+
+    double ReservationRatio(Curve const& cumulative, double uBin, double uIn)
     {
         size_t bin = 0;
-        for (size_t b = kCurveBins; b-- > 0;)
+        while (bin < kCurveBins && static_cast<double>(cumulative[bin]) < uBin)
         {
-            if (uBin < w[b])
-            {
-                bin = b;
-                break;
-            }
+            ++bin;
         }
+        bin = std::min(bin, kCurveBins - 1);
         double lo = kRatioEdges[bin];
         return lo + uIn * (kRatioEdges[bin + 1] - lo);
     }
@@ -318,7 +337,8 @@ namespace Market
                     Faction& fac = factions[ok ? slot : 0];
                     Faction parsed;
                     ok = ok && ParseFloat(f[1], parsed.demandScale) && ParseFloat(f[2], parsed.supplyScale) &&
-                         ASParse::ClampedU32(f[3], parsed.refListings) && ASParse::ClampedU32(f[4], parsed.refSellers) &&
+                         ASParse::ClampedU32(f[3], parsed.refListings) &&
+                         ASParse::ClampedU32(f[4], parsed.refSellers) &&
                          parsed.demandScale >= 0.0f && parsed.supplyScale >= 0.0f;
                     if (ok)
                     {
@@ -359,7 +379,7 @@ namespace Market
                     {
                         builder.curveKeys.push_back(
                             {slot, itemClass, static_cast<uint32>(builder.curves[slot].size())});
-                        builder.curves[slot].push_back(w);
+                        builder.curves[slot].push_back(CumulativeCurve(w));
                     }
                 }
                 else if (section == "WEEKDAY")
@@ -411,8 +431,8 @@ namespace Market
                     if (ok)
                     {
                         Faction& fac = factions[slot];
-                        if (fac.stackIndex.try_emplace(StackKey(type, itemClass), static_cast<uint32>(fac.stacks.size()))
-                                .second)
+                        uint32 const next = static_cast<uint32>(fac.stacks.size());
+                        if (fac.stackIndex.try_emplace(StackKey(type, itemClass), next).second)
                         {
                             fac.stacks.push_back(q);
                         }

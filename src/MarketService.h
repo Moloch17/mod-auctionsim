@@ -24,8 +24,9 @@ class MarketService
 public:
     // Contract's step length: the module's 30-minute timer.
     static constexpr double kStepHours = 0.5;
-    // Most auctions created in one world tick; a bigger step's remainder is created on
-    // the following ticks, so a large Market.Scale never stalls one tick.
+    // Most auctions created in one world tick, both houses and carried-over posts
+    // together; a bigger step's remainder is created on the following ticks, so a
+    // large Market.Scale never stalls one tick.
     static constexpr uint32 kMaxListingsPerTick = 100;
 
     // Reads and links auctionsim_market.dat, then resolves it against this realm's
@@ -106,5 +107,6 @@ private:
     std::vector<uint32> _claims;
     std::vector<PendingPost> _pending;
     size_t _pendingHead = 0;
+    uint32 _budgetLeft = kMaxListingsPerTick;  // this tick's remaining auction creations
     std::array<HouseStats, Market::kFactions> _stats{};
 };

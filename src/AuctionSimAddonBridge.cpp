@@ -72,9 +72,11 @@ namespace
     // single-threaded and there is one bot / one GM editing at a time.
     std::unordered_set<std::string> stagedKeys;
 
-    // A Mode change only takes effect at restart, so it is staged here rather than on
-    // the running config (which must keep saying what actually runs).
+    // A Mode change only takes effect at restart, so it is kept here rather than on
+    // the running config (which must keep saying what actually runs). Once set, it is
+    // what the panel shows: the value auctionsim.conf will start with.
     bool stagedMarketMode = false;
+    bool modeChanged = false;
 
     void SendMessage(Player* target, std::string const& body)
     {
@@ -135,7 +137,7 @@ namespace
         SendMessage(target, Acore::StringFormat("{}\tMaxRequiredLevel\t{}", Msg::Config, config->maxRequiredLevel));
         SendMessage(target, Acore::StringFormat("{}\tMaxItemLevel\t{}", Msg::Config, config->maxItemLevel));
         // Wire keys stay dotless: a dotted key is a mask cell to both ends.
-        bool modeShown = stagedKeys.count("Mode") ? stagedMarketMode : config->marketMode;
+        bool modeShown = modeChanged ? stagedMarketMode : config->marketMode;
         SendMessage(target, Acore::StringFormat("{}\tMode\t{}", Msg::Config, ASConfig::ModeName(modeShown)));
         SendMessage(target, Acore::StringFormat("{}\tMarketBots\t{}", Msg::Config, config->marketBots));
         SendMessage(target, Acore::StringFormat("{}\tMarketScale\t{:g}", Msg::Config, config->marketScale));
@@ -220,6 +222,7 @@ namespace
                 SendError(target, Acore::StringFormat("'{}' is not Replay or Market", valueStr));
                 return;
             }
+            modeChanged = true;
             stagedKeys.insert(key);
             return;
         }
