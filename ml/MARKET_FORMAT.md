@@ -107,3 +107,18 @@ Every step of `dt` hours (module: its 30-minute timer, dt = 0.5), per faction ho
    reservation and buys the cheapest listing with buyout ≤ reservation, whole, whoever owns it (players' listings
    included: that is how players sell to the market); none → it leaves.
 3. Expiry is the core's.
+
+## Fill (immediate full population)
+
+To put a house in the state it would be in had the bots been running all along, without waiting 1-2 days:
+
+1. Take the house as it is now. Players' listings and the bots' own existing listings stay as they are and act as
+   competitors (cheapest, units up, owners) but are never bought during the fill.
+2. Run the runtime above over the FILL_HOURS = 48 simulated hours before now (the longest auction duration, so the
+   result is steady state), on virtual bot listings only: posts at their simulated times, expiry, and buyers buying
+   only virtual listings. Weekday follows the simulated clock.
+3. The virtual listings still up at the end are what the bots would have up now, each with its remaining time.
+   Per item, drop as many of them as the bots already have up for that item (so a fill on a house that is already
+   full adds almost nothing), and create the rest as real auctions with their remaining time.
+
+A fill is a one-off top-up; the normal steps continue afterwards.
