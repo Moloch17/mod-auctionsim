@@ -6,6 +6,11 @@
 class ASConfig;
 class AuctionListingService;
 class Bot;
+class MarketService;
+namespace Market
+{
+    class Data;
+}
 
 // Self-checks for the ".auctionsim test" GM command. Every test reports a clear
 // pass/fail rather than asserting/throwing, so a broken invariant is reported,
@@ -49,4 +54,11 @@ namespace AuctionSimTests
     // specifically for this temporary override -- every other test only reads config.
     TestResult RunLiveLevelCapTest(
         Bot& bot, ASConfig& config, AuctionListingService& listingService, AuctionHouseId houseId);
+
+    // Market mode: pure checks on an in-memory fixture (parsing, fallbacks, bins,
+    // sampling, scale math, pricing floors, buyers, name skipping) plus a timed
+    // Lordaeron-sized synthetic step. With the real file loaded / the market running,
+    // also checks those (`loaded` / `market` may be null).
+    std::vector<TestResult> RunMarketTests(
+        ASConfig const& config, Market::Data const* loaded, MarketService const* market);
 }

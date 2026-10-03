@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 #include "ASConfig.h"
 #include "AuctionBuyingService.h"
@@ -9,6 +10,9 @@
 #include "AuctionSimTests.h"
 #include "AuctionSimVersion.h"
 #include "Bot.h"
+#include "MarketBots.h"
+#include "MarketData.h"
+#include "MarketService.h"
 #include "Player.h"
 #include "ScriptMgr.h"
 
@@ -23,6 +27,9 @@ public:
 
     void OnUpdate(uint32 diff) override;
     void ScanAuctions(AuctionHouseId _id);
+    // The 30-minute pass for the configured mode: a Replay scan of both houses, or one
+    // Market step. Backs the timer, ".auctionsim scan" and the addon's Scan button.
+    void RunScan();
     void DeleteAuctions();
     uint32 CleanOverCapAuctions();
     std::vector<AuctionSimTests::TestResult> RunTests();
@@ -64,6 +71,26 @@ public:
     // for the mail hook -- reads the in-memory id, never re-parses config.
     uint32 GetBotCharacterLowGuid() const { return bot ? bot->GetCharacterID() : 0; }
 
+    // --- Market mode -------------------------------------------------------------
+    // A named market seller's character (any mode: leftovers stay guarded after a
+    // switch back to Replay).
+    bool IsMarketBot(uint32 lowGuid) const { return marketRoster.IsBot(lowGuid); }
+    // The buyer bot or a market seller: every mail to these is discarded.
+    bool IsModuleCharacter(uint32 lowGuid) const;
+    bool IsMarketMode() const { return config && config->marketMode; }
+    MarketService* GetMarket() const { return market.get(); }
+    Market::Data const* GetMarketData() const { return marketData.get(); }
+    // Market mode was asked for but auctionsim_market.dat is missing, outdated or
+    // malformed; the module refuses to run. Have/need are schema versions (have 0 =
+    // missing or unstamped); MarketError() is the loader's reason.
+    bool IsMarketUnavailable() const { return _marketUnavailable; }
+    uint32 MarketHaveVersion() const { return _marketHaveVer; }
+    uint32 MarketNeedVersion() const { return AUCTIONSIM_MARKET_VERSION; }
+    std::string const& MarketError() const { return _marketError; }
+    // Re-reads auctionsim.conf and auctionsim_market.dat and re-resolves the sellers
+    // (".auctionsim market reload"). False, with the reason in `note`, on failure.
+    bool ReloadMarket(std::string& note);
+
     // Starts the bot, or swaps it to the character in auctionsim.conf, with no
     // restart. reloadConfig re-reads the .conf first (for values the addon just
     // wrote). Returns false, leaving any running bot untouched, if config won't load
@@ -83,6 +110,9 @@ private:
     // _config* fields if it is behind AUCTIONSIM_CONFIG_VERSION.
     void EvaluateConfigVersion();
 
+    // Loads auctionsim_market.dat into marketData, or records why not.
+    bool LoadMarketData();
+
     static AuctionSim* _instance;
     std::unique_ptr<Bot> bot;
     // Old bots kept alive rather than destroyed: the headless Player is only safe to
@@ -91,6 +121,9 @@ private:
     std::unique_ptr<ASConfig> config;
     std::unique_ptr<AuctionListingService> listingService;
     std::unique_ptr<AuctionBuyingService> buyingService;
+    Market::BotRoster marketRoster;
+    std::unique_ptr<Market::Data> marketData;
+    std::unique_ptr<MarketService> market;
     uint32 scanTimer = 0;
 
     bool _configOutdated = false;
@@ -99,6 +132,9 @@ private:
     bool _dataOutdated = false;
     uint32 _dataHaveVer = 0;
     uint32 _dataNeedVer = 0;
+    bool _marketUnavailable = false;
+    uint32 _marketHaveVer = 0;
+    std::string _marketError;
 };
 class AuctionSimMailManager : public MailScript
 {
@@ -115,4 +151,14 @@ public:
         uint32& custom_expiration,
         bool& deleteMailItemsFromDB,
         bool& sendMail) override;
+};
+
+// Market sellers never play: a login on one (say after a GM reset its account's
+// password) is kicked straight away.
+class AuctionSimMarketGuard : public PlayerScript
+{
+public:
+    AuctionSimMarketGuard() : PlayerScript("AuctionSimMarketGuard", {PLAYERHOOK_ON_LOGIN}) {}
+
+    void OnPlayerLogin(Player* player) override;
 };

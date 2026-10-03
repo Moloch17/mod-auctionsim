@@ -87,6 +87,14 @@ public:
 
     size_t QueueSize() const { return _queue.size(); }
 
+    // True while this auction waits in the queue (as a buyout or a bid).
+    bool IsQueued(uint32 auctionId) const { return _queuedAuctionIds.count(auctionId) > 0; }
+
+    // Market mode's buyers: queues a buyout of an auction they chose, executed at
+    // buyTime by the same BuyItem path (re-fetch, bidder refund). False, and nothing
+    // queued, if the auction is already queued. Call SortQueue() after a batch.
+    bool EnqueueBuyout(uint32 auctionId, AuctionHouseId houseId, time_t buyTime);
+
     // Read-only view of the current queue, soonest-due last (matches SortQueue's order).
     // For reporting only (e.g. ".auctionsim showqueue") -- entries are AuctionEntry*, only
     // valid until the next ProcessDueQueue()/scan pass on this same world tick.

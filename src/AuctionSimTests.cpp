@@ -1,11 +1,25 @@
 #include "AuctionSimTests.h"
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdlib>
+#include <sstream>
+#include <string>
+#include <vector>
 #include "ASConfig.h"
 #include "AuctionBuyingService.h"
 #include "AuctionListingService.h"
 #include "AuctionPricing.h"
 #include "Bot.h"
+#include "CharacterCache.h"
+#include "MarketBots.h"
+#include "MarketData.h"
+#include "MarketEngine.h"
+#include "MarketRng.h"
+#include "MarketService.h"
 #include "GameTime.h"
 #include "ObjectMgr.h"
+#include "Player.h"
 #include "ScannedItem.h"
 #include "StringFormat.h"
 
@@ -1153,6 +1167,753 @@ namespace
     }
 }
 
+// --- Market mode -------------------------------------------------------------------
+// Pure checks on an in-memory fixture market file: no DB, no auction house.
+namespace
+{
+    // Builds the global POLICY fallback rows (every mb, offset 0, zero quantiles) for one faction.
+    std::string FallbackPolicyRows(uint32 house, int32 skipMb = -2)
+    {
+        std::string rows;
+        for (int32 mb = -1; mb <= Market::kMaxCheapestBin; ++mb)
+        {
+            if (mb != skipMb)
+            {
+                rows += Acore::StringFormat("{}:-1:-1:-1:-1:{}:0:0:0:0:0:0:0:0\n", house, mb);
+            }
+        }
+        return rows;
+    }
+
+    // A small two-faction market. Faction 2 (Alliance): Linen Cloth (2589), Bolt of
+    // Linen Cloth (2996, crafted from 2 Linen at margin 1.1) and Minor Healing Potion
+    // (118, vendor price above its ref). Faction 6: Linen only. Quantiles are zero, so
+    // prices and stacks are exact; offsets tell the POLICY fallback levels apart.
+    std::string MarketFixture(std::string const& extraBasket = "", int32 skipMb = -2)
+    {
+        std::string policy = FallbackPolicyRows(2, skipMb) + FallbackPolicyRows(6) +
+                             "2:3:7:2:1:5:0:0:0:0:0:0:0:0.1\n"
+                             "2:3:7:-1:-1:5:0:0:0:0:0:0:0:0.2\n"
+                             "2:3:-1:-1:-1:5:0:0:0:0:0:0:0:0.3\n";
+        size_t policyRows = 0;
+        for (char c : policy)
+        {
+            policyRows += c == '\n';
+        }
+        std::string basket = "2:0:2589:3:4.0:0.4:1.5\n"
+                             "2:1:2996:3:1.0:0.0:1.0\n"
+                             "2:2:118:3:2.0:1.0:1.0\n"
+                             "6:0:2589:1:4.0:0.4:1.0\n" +
+                             extraBasket;
+        size_t basketRows = 0;
+        for (char c : basket)
+        {
+            basketRows += c == '\n';
+        }
+        return "AUCTIONSIM_MARKET 1\n"
+               "META 2\n"
+               "2:1.5:0.8:60000:4000\n"
+               "6:1.0:1.0:50000:3500\n"
+               "CLASS 3\n"
+               "0:Consumable\n"
+               "7:Trade Goods\n"
+               "-1:Other\n"
+               "ITEM 4\n"
+               "2:2589:7:120:20:20:13:3.5\n"
+               "2:2996:7:100:1:5:40:0.5\n"
+               "2:118:0:50:5:5:80:1.0\n"
+               "6:2589:7:100:20:20:13:3.0\n"
+               "CURVE 3\n"
+               "2:-1:1:0.9:0.8:0.7:0.5:0.3:0.2:0.1:0.05\n"
+               "2:7:1:1:1:1:0:0:0:0:0\n"
+               "6:-1:1:0.9:0.8:0.7:0.5:0.3:0.2:0.1:0.05\n"
+               "WEEKDAY 2\n"
+               "2:-1:1:1:1:1:1:1:1\n"
+               "2:7:0.5:1:1:1:1:1.5:1\n" +
+               Acore::StringFormat("POLICY {}\n", policyRows) + policy +
+               "STACK 3\n"
+               "2:-1:-1:0:0:0:0:0:0:0\n"
+               "6:-1:-1:0:0:0:0:0:0:0\n"
+               "2:3:7:0.6931472:0.6931472:0.6931472:0.6931472:0.6931472:0.6931472:0.6931472\n"
+               "FUTURE 2\n"
+               "a section a newer exporter added\n"
+               "and its second row\n"
+               "CRAFT 1\n"
+               "2:2996:2589:2:1.1\n"
+               "BOT 4\n"
+               "2:1:Bravo:3\n"
+               "2:0:Alpha:3\n"
+               "6:0:Gamma:1\n"
+               "6:1:Delta:1\n" +
+               Acore::StringFormat("BASKET {}\n", basketRows) + basket;
+    }
+
+    // Every fixture item exists, stacks to 20, with no level cap or vendor guard.
+    Market::ItemFacts FixtureFacts(uint32 /*itemId*/)
+    {
+        Market::ItemFacts facts;
+        facts.exists = true;
+        facts.maxStack = 20;
+        return facts;
+    }
+
+    bool ParseFixture(std::string const& text, Market::Data& data, std::string& error)
+    {
+        std::istringstream in(text);
+        if (!data.Parse(in, error))
+        {
+            return false;
+        }
+        data.Resolve(FixtureFacts);
+        return true;
+    }
+
+    TestResult TestMarketParse()
+    {
+        std::string const name = "Market file parse";
+        Market::Data data;
+        std::string error;
+        if (!ParseFixture(MarketFixture(), data, error))
+        {
+            return Fail(name, Acore::StringFormat("fixture refused: {}", error));
+        }
+        Market::Faction const& alliance = data.factions[0];
+        Market::Faction const& horde = data.factions[1];
+        if (!alliance.present || !horde.present || alliance.demandScale != 1.5f || alliance.supplyScale != 0.8f)
+        {
+            return Fail(name, "META not read");
+        }
+        // 3 listed items + none extra (Linen is both an item and Bolt's reagent).
+        if (alliance.items.size() != 3 || horde.items.size() != 1 || alliance.basket.size() != 3 ||
+            horde.basket.size() != 1)
+        {
+            return Fail(name, Acore::StringFormat("items {}/{}, basket {}/{}", alliance.items.size(),
+                horde.items.size(), alliance.basket.size(), horde.basket.size()));
+        }
+        if (alliance.bots.size() != 2 || alliance.bots[0].name != "Alpha" || alliance.bots[1].name != "Bravo")
+        {
+            return Fail(name, "BOT rows not sorted by index");
+        }
+        if (data.classNames.size() != 3 || data.classNames.at(7) != "Trade Goods")
+        {
+            return Fail(name, "CLASS rows not read");
+        }
+        Market::Item const& bolt = alliance.items[alliance.FindItem(2996)];
+        if (bolt.craftEnd - bolt.craftBegin != 1 || alliance.craft[bolt.craftBegin].qty != 2.0f ||
+            bolt.craftMargin != 1.1f || alliance.items[alliance.craft[bolt.craftBegin].itemIdx].itemId != 2589)
+        {
+            return Fail(name, "CRAFT not linked to the bolt");
+        }
+        if (data.stats.skippedRows != 0)
+        {
+            return Fail(name, Acore::StringFormat("{} rows skipped (unknown section rows count as known?)",
+                data.stats.skippedRows));
+        }
+        return Pass(name, Acore::StringFormat("{} rows, unknown section skipped", data.stats.rows));
+    }
+
+    TestResult TestMarketFallbackLookups()
+    {
+        std::string const name = "Market fallback lookups";
+        Market::Data data;
+        std::string error;
+        if (!ParseFixture(MarketFixture(), data, error))
+        {
+            return Fail(name, error);
+        }
+        Market::Faction const& fac = data.factions[0];
+        struct Case
+        {
+            int32 type, itemClass, ub, sb, mb;
+            float offset;
+        };
+        Case const cases[] = {
+            {3, 7, 2, 1, 5, 0.1f},   // exact row
+            {3, 7, 0, 0, 5, 0.2f},   // (type, class, -1, -1, mb)
+            {3, 0, 2, 1, 5, 0.3f},   // (type, -1, -1, -1, mb)
+            {9, 7, 2, 1, 5, 0.0f},   // global
+            {3, 7, 2, 1, 4, 0.0f},   // no specific row for mb 4: global
+            {3, 7, 2, 1, -1, 0.0f},  // nothing up: global mb -1
+        };
+        for (Case const& c : cases)
+        {
+            Market::PolicyRow const* row = fac.FindPolicy(c.type, c.itemClass, c.ub, c.sb, c.mb);
+            if (!row || row->offset != c.offset)
+            {
+                return Fail(name, Acore::StringFormat("POLICY ({},{},{},{},{}) resolved to offset {}", c.type,
+                    c.itemClass, c.ub, c.sb, c.mb, row ? row->offset : -99.0f));
+            }
+        }
+        int32 specific = fac.FindStack(3, 7);
+        int32 global = fac.FindStack(-1, -1);
+        if (specific < 0 || global < 0 || specific == global || fac.FindStack(3, 0) != global ||
+            fac.FindStack(5, 7) != global)
+        {
+            return Fail(name, "STACK fallback wrong");
+        }
+        Market::Item const& linen = fac.items[fac.FindItem(2589)];
+        Market::Item const& potion = fac.items[fac.FindItem(118)];
+        if (linen.curve == potion.curve || potion.curve < 0 || linen.weekday == potion.weekday ||
+            fac.weekdays[linen.weekday][0] != 0.5f || fac.weekdays[potion.weekday][0] != 1.0f)
+        {
+            return Fail(name, "CURVE / WEEKDAY class fallback wrong");
+        }
+        return Pass(name);
+    }
+
+    TestResult TestMarketMalformedFiles()
+    {
+        std::string const name = "Market file refusals";
+        struct Case
+        {
+            char const* what;
+            std::string text;
+            uint32 version;
+        };
+        std::string fixture = MarketFixture();
+        std::string truncated = fixture.substr(0, fixture.rfind('\n', fixture.size() - 2) + 1);  // drop last row
+        std::string duplicate = fixture + "CLASS 1\n9:Again\n";
+        std::vector<Case> const cases = {
+            {"empty file", "", 0},
+            {"no stamp", "AUCTIONSIM_DAT 1\nMETA 0\n", 0},
+            {"wrong schema", "AUCTIONSIM_MARKET 99\nMETA 0\n", 99},
+            {"truncated section", truncated, 1},
+            {"duplicate section", duplicate, 1},
+            {"missing fallback POLICY", MarketFixture("", 3), 1},
+            {"no META", "AUCTIONSIM_MARKET 1\nITEM 0\n", 1},
+        };
+        for (Case const& c : cases)
+        {
+            Market::Data data;
+            std::string error;
+            std::istringstream in(c.text);
+            if (data.Parse(in, error))
+            {
+                return Fail(name, Acore::StringFormat("accepted a file with {}", c.what));
+            }
+            if (data.foundVersion != c.version || error.empty())
+            {
+                return Fail(name, Acore::StringFormat("{}: version {} / error '{}'", c.what, data.foundVersion, error));
+            }
+        }
+
+        // One bad row is skipped, not fatal.
+        Market::Data data;
+        std::string error;
+        if (!ParseFixture(MarketFixture("2:3:notanitem:3:1.0:0.5:1.0\n"), data, error) ||
+            data.stats.skippedRows != 1 || data.factions[0].basket.size() != 3)
+        {
+            return Fail(name, Acore::StringFormat("a malformed BASKET row wasn't skipped cleanly ({})", error));
+        }
+        // A basket row for an item without an ITEM row is dropped.
+        if (!ParseFixture(MarketFixture("2:3:9999:3:1.0:0.5:1.0\n"), data, error) || data.stats.droppedBasket != 1)
+        {
+            return Fail(name, "a BASKET row for an unknown item wasn't dropped");
+        }
+        // Resolve drops items the realm doesn't have, and their basket rows.
+        std::istringstream in(MarketFixture());
+        data.Parse(in, error);
+        data.Resolve([](uint32 itemId) {
+            Market::ItemFacts facts = FixtureFacts(itemId);
+            facts.exists = itemId != 118;
+            facts.postable = itemId != 2996;
+            return facts;
+        });
+        if (data.factions[0].basket.size() != 1 || data.stats.droppedItems != 1)
+        {
+            return Fail(name, "Resolve kept a missing or unpostable item's basket rows");
+        }
+        return Pass(name, Acore::StringFormat("{} refusals, bad rows skipped", cases.size()));
+    }
+
+    TestResult TestMarketMissingFile(ASConfig const& config)
+    {
+        Market::Data data;
+        std::string error;
+        uint32 found = 7;
+        if (MarketService::LoadFile("/nonexistent/auctionsim_market.dat", config, data, error, found) || found != 0 ||
+            error.empty())
+        {
+            return Fail("Market missing file", "a missing file wasn't refused with version 0");
+        }
+        return Pass("Market missing file", error);
+    }
+
+    TestResult TestMarketBins()
+    {
+        std::string const name = "Market bin functions";
+        struct UnitsCase
+        {
+            uint64 units;
+            int32 bin;
+        };
+        // log1p: 1 -> 0.69, 2 -> 1.10, 6 -> 1.95, 7 -> 2.08, 1096 -> 7.0
+        UnitsCase const unitsCases[] = {{0, 0}, {1, 0}, {2, 1}, {6, 1}, {7, 2}, {1095, 6}, {1096, 7}, {1000000, 7}};
+        for (UnitsCase c : unitsCases)
+        {
+            if (Market::UnitsBin(c.units) != c.bin)
+            {
+                return Fail(name, Acore::StringFormat("UnitsBin({}) = {}, want {}", c.units,
+                    Market::UnitsBin(c.units), c.bin));
+            }
+        }
+        int32 const sellers[] = {0, 1, 2, 3, 3, 4, 4, 4, 4, 5, 5};
+        for (uint32 s = 0; s < 11; ++s)
+        {
+            if (Market::SellersBin(s) != sellers[s])
+            {
+                return Fail(name, Acore::StringFormat("SellersBin({}) = {}", s, Market::SellersBin(s)));
+            }
+        }
+        if (Market::SellersBin(1000) != 5)
+        {
+            return Fail(name, "SellersBin(1000) != 5");
+        }
+        struct CheapCase
+        {
+            double logRatio;
+            int32 bin;
+        };
+        // Edges -1, -0.5, -0.25, -0.1, 0, 0.1, 0.25, 0.5, 1: below -1 -> 0, >= 1 -> 9.
+        CheapCase const cheapCases[] = {{-2.0, 0}, {-1.001, 0}, {-0.999, 1}, {-0.3, 2}, {-0.2, 3}, {-0.05, 4},
+            {0.0, 5}, {0.05, 5}, {0.2, 6}, {0.3, 7}, {0.7, 8}, {1.001, 9}, {3.0, 9}};
+        for (CheapCase c : cheapCases)
+        {
+            double cheapest = 1000.0 * std::exp(c.logRatio);
+            if (Market::CheapestBin(true, cheapest, 1000.0) != c.bin)
+            {
+                return Fail(name, Acore::StringFormat("CheapestBin(ln ratio {}) = {}, want {}", c.logRatio,
+                    Market::CheapestBin(true, cheapest, 1000.0), c.bin));
+            }
+        }
+        if (Market::CheapestBin(false, 10.0, 10.0) != -1)
+        {
+            return Fail(name, "CheapestBin without a buyout listing isn't -1");
+        }
+        return Pass(name);
+    }
+
+    TestResult TestMarketQuantileDraw()
+    {
+        Market::Quantiles q = {0, 1, 2, 3, 4, 5, 6};
+        struct Case
+        {
+            double u, want;
+        };
+        Case const cases[] = {{0.0, 0}, {0.01, 0}, {0.02, 0}, {0.06, 0.5}, {0.175, 1.5}, {0.5, 3}, {0.825, 4.5},
+            {0.98, 6}, {0.999, 6}};
+        for (Case c : cases)
+        {
+            double got = Market::QuantileDraw(q, c.u);
+            if (std::fabs(got - c.want) > 1e-9)
+            {
+                return Fail("Market quantile interpolation", Acore::StringFormat("u {} gave {}, want {}", c.u, got,
+                    c.want));
+            }
+        }
+        return Pass("Market quantile interpolation");
+    }
+
+    TestResult TestMarketReservationBounds()
+    {
+        std::string const name = "Market reservation sampling";
+        Market::Rng rng(12345);
+        Market::Curve full = Market::CumulativeCurve({1, 0.9f, 0.8f, 0.7f, 0.5f, 0.3f, 0.2f, 0.1f, 0.05f});
+        for (int i = 0; i < 20000; ++i)
+        {
+            double r = Market::ReservationRatio(full, rng.Uniform(), rng.Uniform());
+            if (r < 0.25 || r >= 5.0)
+            {
+                return Fail(name, Acore::StringFormat("ratio {} outside [0.25, 5)", r));
+            }
+        }
+        // Everyone pays at least 0.85 x ref, nobody 1.0: all draws in [0.85, 1.0).
+        Market::Curve narrow = Market::CumulativeCurve({1, 1, 1, 1, 0, 0, 0, 0, 0});
+        for (int i = 0; i < 2000; ++i)
+        {
+            double r = Market::ReservationRatio(narrow, rng.Uniform(), rng.Uniform());
+            if (r < 0.85 || r >= 1.0)
+            {
+                return Fail(name, Acore::StringFormat("narrow curve drew {}", r));
+            }
+        }
+        // Half the buyers in bin 0, half in bin 1.
+        Market::Curve half = Market::CumulativeCurve({1, 0.5f, 0, 0, 0, 0, 0, 0, 0});
+        int lowBin = 0;
+        int const draws = 20000;
+        for (int i = 0; i < draws; ++i)
+        {
+            lowBin += Market::ReservationRatio(half, rng.Uniform(), rng.Uniform()) < 0.5;
+        }
+        if (std::abs(lowBin - draws / 2) > draws / 50)
+        {
+            return Fail(name, Acore::StringFormat("{} of {} draws in bin 0, want about half", lowBin, draws));
+        }
+        return Pass(name);
+    }
+
+    TestResult TestMarketScaleMath()
+    {
+        std::string const name = "Market scale math";
+        Market::Data data;
+        std::string error;
+        if (!ParseFixture(MarketFixture(), data, error))
+        {
+            return Fail(name, error);
+        }
+        data.SetRates(0.1, 0.5);
+        // rateH 4 x supplyScale 0.8 x scale 0.1 x dt 0.5
+        Market::BasketRow const& linen = data.factions[0].basket[0];
+        if (std::fabs(linen.lambda - 0.16f) > 1e-6f || std::fabs(linen.expNegLambda - std::exp(-0.16f)) > 1e-6f)
+        {
+            return Fail(name, Acore::StringFormat("posting rate {} for linen, want 0.16", linen.lambda));
+        }
+
+        Market::Rng rng(7);
+        for (double lambda : {0.05, 2.0, 25.0, 80.0})
+        {
+            double sum = 0.0;
+            int const n = 40000;
+            for (int i = 0; i < n; ++i)
+            {
+                sum += rng.Poisson(lambda);
+            }
+            double mean = sum / n;
+            if (std::fabs(mean - lambda) > 0.03 * lambda + 0.01)
+            {
+                return Fail(name, Acore::StringFormat("Poisson({}) mean {}", lambda, mean));
+            }
+        }
+
+        // The market's volume doesn't depend on the bots in use: the same draws give the
+        // same posts, only re-assigned to bot mod N.
+        data.SetRates(50.0, 0.5);
+        Market::Engine engine;
+        engine.BuildState(data.factions[0].items.size());
+        std::vector<Market::PostOrder> few, many;
+        Market::Rng a(99), b(99);
+        engine.PlanPosts(data.factions[0], 1, a, few);
+        engine.PlanPosts(data.factions[0], 100, b, many);
+        if (few.empty() || few.size() != many.size())
+        {
+            return Fail(name, Acore::StringFormat("{} posts with 1 bot, {} with 100", few.size(), many.size()));
+        }
+        for (size_t i = 0; i < few.size(); ++i)
+        {
+            if (few[i].botSlot != 0 || many[i].botSlot >= 100 || few[i].unitPrice != many[i].unitPrice)
+            {
+                return Fail(name, "bot mod N changed more than the poster");
+            }
+        }
+        std::vector<Market::PostOrder> zero;
+        engine.PlanPosts(data.factions[0], 0, a, zero);
+        if (!zero.empty())
+        {
+            return Fail(name, "posted with no bots in use");
+        }
+        return Pass(name, Acore::StringFormat("{} posts at scale 50", few.size()));
+    }
+
+    TestResult TestMarketPricingAndBuyers()
+    {
+        std::string const name = "Market pricing and buyers";
+        Market::Data data;
+        std::string error;
+        if (!ParseFixture(MarketFixture(), data, error))
+        {
+            return Fail(name, error);
+        }
+        Market::Faction const& fac = data.factions[0];
+        uint32 const linen = static_cast<uint32>(fac.FindItem(2589));
+
+        Market::Engine engine;
+        auto add = [&engine](uint32 item, uint32 perUnit, uint32 count, uint32 owner, uint32 id, bool buyable) {
+            Market::Listing listing;
+            listing.itemIdx = item;
+            listing.perUnit = perUnit;
+            listing.count = count;
+            listing.owner = owner;
+            listing.auctionId = id;
+            listing.flags = buyable ? Market::Listing::kBuyable : 0;
+            engine.Listings().push_back(listing);
+        };
+        add(linen, 70, 20, 1, 101, true);
+        add(linen, Market::Listing::kNoBuyout, 5, 2, 102, false);
+        add(linen, 60, 10, 3, 103, false);  // e.g. vendor-guarded or already queued
+        add(linen, 50, 20, 1, 104, true);
+        engine.BuildState(fac.items.size());
+
+        Market::ItemState const& state = engine.State(linen);
+        if (state.cheapest != 50 || state.units != 55 || state.sellers != 3)
+        {
+            return Fail(name, Acore::StringFormat("linen state cheapest {} units {} sellers {}", state.cheapest,
+                state.units, state.sellers));
+        }
+
+        Market::Rng rng(5);
+        // Bolt: nothing up (mb -1) -> ref 100, but the craft floor is 1.1 x 2 x cheapest linen 50 = 110.
+        uint32 boltPrice = engine.DrawUnitPrice(fac, fac.basket[1], rng);
+        // Potion: ref 50 but its vendor price is 80.
+        uint32 potionPrice = engine.DrawUnitPrice(fac, fac.basket[2], rng);
+        // Linen: mb 5 (cheapest 50 = 0.42 x ref -> ln -0.87 -> bin 1), global offset 0 -> the cheapest.
+        uint32 linenPrice = engine.DrawUnitPrice(fac, fac.basket[0], rng);
+        if (boltPrice != 110 || potionPrice != 80 || linenPrice != 50)
+        {
+            return Fail(name, Acore::StringFormat("prices bolt {} potion {} linen {}, want 110 / 80 / 50",
+                boltPrice, potionPrice, linenPrice));
+        }
+        // Bolt's (3, 7) STACK draws ln 2: conv 1 -> 2. Linen's conv 20 is its cap.
+        uint32 boltCount = engine.DrawCount(fac, fac.basket[1], rng);
+        uint32 linenCount = engine.DrawCount(fac, fac.basket[0], rng);
+        if (boltCount != 2 || linenCount != 20)
+        {
+            return Fail(name, Acore::StringFormat("stacks bolt {} linen {}, want 2 / 20", boltCount, linenCount));
+        }
+
+        // Linen's class-7 CURVE puts every reservation in [0.85, 1.0) x 120 = [102, 120): a
+        // flood of buyers takes 50 then 70 (60 isn't buyable), then finds only a bid-only
+        // listing and leaves.
+        std::vector<uint32> claims;
+        uint32 buyers = engine.PlanBuys(fac, 100.0, 0, rng, claims);
+        std::vector<uint32> ids;
+        for (uint32 index : claims)
+        {
+            ids.push_back(engine.Listings()[index].auctionId);
+        }
+        if (buyers < 10 || ids != std::vector<uint32>{104, 101})
+        {
+            return Fail(name, Acore::StringFormat("{} buyers took {} listing(s)", buyers, ids.size()));
+        }
+        // Nobody's reservation reaches 3 x ref: an overpriced listing is never bought.
+        engine.Listings().clear();
+        add(linen, 400, 20, 1, 105, true);
+        engine.BuildState(fac.items.size());
+        claims.clear();
+        engine.PlanBuys(fac, 100.0, 0, rng, claims);
+        if (!claims.empty())
+        {
+            return Fail(name, "a buyer paid 3.3 x ref with a curve that stops at 1.0 x ref");
+        }
+        return Pass(name);
+    }
+
+    TestResult TestMarketBotNameSkipping()
+    {
+        std::vector<Market::BotName> rows;
+        for (char const* botName : {"Alpha", "Bravo", "Charlie", "Dana", "Echo"})
+        {
+            rows.push_back({static_cast<uint32>(rows.size()), botName, 1});
+        }
+        auto owned = [](std::string const& n) -> uint32 { return n == "Bravo" ? 77 : 0; };
+        auto available = [](std::string const& n) { return n != "Alpha" && n != "Charlie" && n != "Bravo"; };
+
+        std::vector<Market::BotPick> two = Market::PickBots(rows, 2, owned, available);
+        std::vector<Market::BotPick> all = Market::PickBots(rows, 10, owned, available);
+        if (two.size() != 2 || two[0].name != "Bravo" || two[0].guid != 77 || two[1].name != "Dana" ||
+            two[1].guid != 0)
+        {
+            return Fail("Market bot name skipping", "the first two usable names weren't Bravo (owned), Dana (new)");
+        }
+        if (all.size() != 3 || all[2].name != "Echo")
+        {
+            return Fail("Market bot name skipping", Acore::StringFormat("{} picks from 5 names with 2 taken",
+                all.size()));
+        }
+        return Pass("Market bot name skipping");
+    }
+
+    // A Lordaeron-sized synthetic market: 10k items and 30k basket rows per faction, 200
+    // bot names. Times the parse, then the per-step arithmetic on a house of `listings`
+    // auctions at `scale`.
+    TestResult TestMarketStepCost()
+    {
+        std::string const name = "Market step cost";
+        constexpr uint32 kItems = 10000;
+        constexpr uint32 kBasket = 30000;
+        constexpr uint32 kBots = 200;
+
+        std::string text = "AUCTIONSIM_MARKET 1\nMETA 2\n2:1:1:60000:4000\n6:1:1:60000:4000\n";
+        std::string items, basket, bots, policy, curves;
+        Market::Rng gen(2024);
+        for (uint32 h : {2u, 6u})
+        {
+            for (uint32 i = 0; i < kItems; ++i)
+            {
+                items += Acore::StringFormat("{}:{}:{}:{}:{}:20:{}:{:.3f}\n", h, 1000 + i, i % 16,
+                    100 + gen.Next() % 100000, 1 + i % 20, gen.Next() % 50, 0.02 + gen.Uniform() * 2.0);
+            }
+            for (uint32 r = 0; r < kBasket; ++r)
+            {
+                basket += Acore::StringFormat("{}:{}:{}:{}:{:.4f}:0.4:1.3\n", h, r % kBots, 1000 + gen.Next() % kItems,
+                    r % 8, gen.Uniform() * 0.6);
+            }
+            for (uint32 b = 0; b < kBots; ++b)
+            {
+                bots += Acore::StringFormat("{}:{}:Bot{}{}:1\n", h, b, h == 2 ? "a" : "h", b);
+            }
+            policy += FallbackPolicyRows(h);
+            for (int32 type = 0; type < 8; ++type)
+            {
+                for (int32 cls = 0; cls < 16; ++cls)
+                {
+                    for (int32 mb = -1; mb <= Market::kMaxCheapestBin; ++mb)
+                    {
+                        policy += Acore::StringFormat(
+                            "{}:{}:{}:-1:-1:{}:-0.3:-0.2:-0.1:0:0.1:0.2:0.4:0\n", h, type, cls, mb);
+                    }
+                }
+            }
+            curves += Acore::StringFormat("{}:-1:1:0.95:0.9:0.8:0.6:0.4:0.2:0.1:0.05\n", h);
+        }
+        auto count = [](std::string const& s) { return std::count(s.begin(), s.end(), '\n'); };
+        text += Acore::StringFormat("ITEM {}\n", count(items)) + items;
+        text += Acore::StringFormat("CURVE {}\n", count(curves)) + curves;
+        text += Acore::StringFormat("POLICY {}\n", count(policy)) + policy;
+        text += "STACK 2\n2:-1:-1:-0.7:-0.3:0:0:0:0.3:0.7\n6:-1:-1:-0.7:-0.3:0:0:0:0.3:0.7\n";
+        text += Acore::StringFormat("BOT {}\n", count(bots)) + bots;
+        text += Acore::StringFormat("BASKET {}\n", count(basket)) + basket;
+
+        Market::Data data;
+        std::string error;
+        auto parseStart = std::chrono::steady_clock::now();
+        if (!ParseFixture(text, data, error))
+        {
+            return Fail(name, Acore::StringFormat("synthetic market refused: {}", error));
+        }
+        long long parseMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - parseStart).count();
+
+        Market::Faction const& fac = data.factions[0];
+        std::string detail = Acore::StringFormat("{} KB of text parsed in {} ms into ~{} KB", text.size() / 1024,
+            parseMs, data.MemoryBytes() / 1024);
+
+        struct Load
+        {
+            double scale;
+            uint32 listings;
+            int steps;
+        };
+        Market::Engine engine;
+        std::vector<Market::Listing> house;
+        std::vector<Market::PostOrder> orders;
+        std::vector<uint32> claims;
+        long long worstAvg = 0;
+        Load const loads[] = {{0.1, 6000, 20}, {1.0, 60000, 5}};
+        for (Load load : loads)
+        {
+            data.SetRates(load.scale, 0.5);
+            house.clear();
+            for (uint32 i = 0; i < load.listings; ++i)
+            {
+                Market::Listing listing;
+                listing.itemIdx = static_cast<uint32>(gen.Next() % fac.items.size());
+                listing.count = 1 + static_cast<uint32>(gen.Next() % 20);
+                listing.perUnit = static_cast<uint32>(fac.items[listing.itemIdx].ref * (0.5 + gen.Uniform()));
+                listing.owner = static_cast<uint32>(gen.Next() % 500);
+                listing.auctionId = i;
+                listing.flags = Market::Listing::kBuyable;
+                house.push_back(listing);
+            }
+
+            uint64 posts = 0, buyers = 0, bought = 0;
+            auto start = std::chrono::steady_clock::now();
+            for (int step = 0; step < load.steps; ++step)
+            {
+                // What MarketService::StepHouse does, minus the core calls.
+                engine.Listings().assign(house.begin(), house.end());
+                engine.BuildState(fac.items.size());
+                orders.clear();
+                engine.PlanPosts(fac, 100, gen, orders);
+                for (Market::PostOrder const& order : orders)
+                {
+                    Market::Listing listing;
+                    listing.itemIdx = order.itemIdx;
+                    listing.perUnit = order.unitPrice;
+                    listing.count = order.count;
+                    listing.flags = Market::Listing::kBuyable;
+                    engine.Listings().push_back(listing);
+                }
+                engine.BuildState(fac.items.size());
+                claims.clear();
+                buyers += engine.PlanBuys(fac, load.scale * 0.5, static_cast<size_t>(step % 7), gen, claims);
+                posts += orders.size();
+                bought += claims.size();
+            }
+            long long avg = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - start).count() / load.steps;
+            worstAvg = std::max(worstAvg, avg);
+            detail += Acore::StringFormat(
+                "; scale {:g}, {} listings: {} us/step ({} posts, {} buyers, {} buys per step)",
+                load.scale, load.listings, avg, posts / load.steps, buyers / load.steps, bought / load.steps);
+        }
+
+        // A sanity bound only (a Debug build is many times slower than -O2): the numbers in
+        // the detail are the point. At -O2 Scale 0.1 is about 0.5 ms, Lordaeron scale ~7 ms.
+        if (worstAvg > 1000000)
+        {
+            return Fail(name, detail);
+        }
+        return Pass(name, detail);
+    }
+
+    TestResult TestMarketLoaded(Market::Data const& data, MarketService const* market)
+    {
+        std::string const name = "Market data loaded";
+        std::string detail;
+        for (size_t slot = 0; slot < Market::kFactions; ++slot)
+        {
+            Market::Faction const& fac = data.factions[slot];
+            if (!fac.present)
+            {
+                continue;
+            }
+            if (fac.items.empty() || fac.basket.empty() || fac.bots.empty())
+            {
+                return Fail(name, Acore::StringFormat("faction {} has no items, basket or bots",
+                    Market::FactionHouse(slot)));
+            }
+            detail += Acore::StringFormat(
+                "{}faction {}: {} items, {} basket rows, {} names",
+                detail.empty() ? "" : "; ",
+                Market::FactionHouse(slot), fac.items.size(), fac.basket.size(), fac.bots.size());
+            if (market && market->IsReady())
+            {
+                detail += Acore::StringFormat(", {} sellers", market->BotsInUse(slot));
+            }
+        }
+        return Pass(name, detail);
+    }
+
+    TestResult TestMarketSellersOnRealm(MarketService const& market)
+    {
+        std::string const name = "Market sellers on the realm";
+        if (!market.IsReady())
+        {
+            return Fail(name, Acore::StringFormat("not ready: {}", market.SetupNote()));
+        }
+        // Every seller is a real character the client can name, of its house's faction.
+        size_t checked = 0;
+        for (size_t slot = 0; slot < Market::kFactions; ++slot)
+        {
+            for (ObjectGuid guid : market.Slots(slot))
+            {
+                CharacterCacheEntry const* entry = sCharacterCache->GetCharacterCacheByGuid(guid);
+                if (!entry || entry->Name.empty())
+                {
+                    return Fail(name, Acore::StringFormat("seller {} has no name", guid.ToString()));
+                }
+                TeamId want = slot == 0 ? TEAM_ALLIANCE : TEAM_HORDE;
+                if (Player::TeamIdForRace(entry->Race) != want)
+                {
+                    return Fail(name, Acore::StringFormat("seller {} is on the wrong faction", entry->Name));
+                }
+                ++checked;
+            }
+        }
+        return Pass(name, Acore::StringFormat("{} sellers named, factions right", checked));
+    }
+}
+
 namespace AuctionSimTests
 {
     std::vector<TestResult> RunLogicTests(Bot& bot, ASConfig const& config)
@@ -1455,5 +2216,32 @@ namespace AuctionSimTests
                 candidate->GetItemID(),
                 proto->RequiredLevel,
                 proto->ItemLevel));
+    }
+
+    std::vector<TestResult> RunMarketTests(
+        ASConfig const& config, Market::Data const* loaded, MarketService const* market)
+    {
+        std::vector<TestResult> results = {
+            TestMarketParse(),
+            TestMarketFallbackLookups(),
+            TestMarketMalformedFiles(),
+            TestMarketMissingFile(config),
+            TestMarketBins(),
+            TestMarketQuantileDraw(),
+            TestMarketReservationBounds(),
+            TestMarketScaleMath(),
+            TestMarketPricingAndBuyers(),
+            TestMarketBotNameSkipping(),
+            TestMarketStepCost(),
+        };
+        if (loaded)
+        {
+            results.push_back(TestMarketLoaded(*loaded, market));
+        }
+        if (market)
+        {
+            results.push_back(TestMarketSellersOnRealm(*market));
+        }
+        return results;
     }
 }

@@ -41,7 +41,12 @@ public:
 
     ChatCommandTable GetCommands() const override
     {
+        static ChatCommandTable marketSubCommandTable = {
+            {"status", HandleMarketStatusCommand, SEC_ADMINISTRATOR, Console::Yes},
+            {"reload", HandleMarketReloadCommand, SEC_ADMINISTRATOR, Console::Yes},
+        };
         static ChatCommandTable auctionSimSubCommandTable = {
+            {"market", marketSubCommandTable},
             {"scan", HandleScanAuctionsCommand, SEC_ADMINISTRATOR, Console::Yes},
             {"delete", HandleDeleteAuctionsCommand, SEC_ADMINISTRATOR, Console::Yes},
             {"test", HandleTestCommand, SEC_ADMINISTRATOR, Console::Yes},
@@ -63,14 +68,12 @@ public:
         }
 
         size_t queueSizeBefore = AuctionSim::instance()->GetBuyQueue().size();
-        long long elapsed = TimedMs([] {
-            AuctionSim::instance()->ScanAuctions(AuctionHouseId::Alliance);
-            AuctionSim::instance()->ScanAuctions(AuctionHouseId::Horde);
-        });
+        long long elapsed = TimedMs([] { AuctionSim::instance()->RunScan(); });
         size_t queueSizeAfter = AuctionSim::instance()->GetBuyQueue().size();
 
         std::string message = fmt::format(
-            "Auction scan completed in {} ms. Added {} item(s) to buy queue ({} total).",
+            "Auction {} completed in {} ms. Added {} item(s) to buy queue ({} total).",
+            AuctionSim::instance()->IsMarketMode() ? "market step" : "scan",
             elapsed,
             queueSizeAfter - queueSizeBefore,
             queueSizeAfter);
@@ -154,6 +157,76 @@ public:
                   status.nextBuyInSeconds,
                   status.lastBuyInSeconds);
         LOG_INFO("module", "{}", message);
+        handler->SendSysMessage(message);
+        return true;
+    }
+
+    static bool HandleMarketStatusCommand(ChatHandler* handler)
+    {
+        AuctionSim* sim = AuctionSim::instance();
+        if (!sim || !sim->IsMarketMode())
+        {
+            handler->SendSysMessage("AuctionSim is in Replay mode (AuctionSim.Mode = Replay).");
+            return true;
+        }
+        if (sim->IsMarketUnavailable())
+        {
+            handler->SendSysMessage(fmt::format(
+                "Market mode can't run: auctionsim_market.dat {} (file schema v{}, needs v{}).",
+                sim->MarketError(),
+                sim->MarketHaveVersion(),
+                sim->MarketNeedVersion()));
+            return true;
+        }
+        MarketService* market = sim->GetMarket();
+        if (!market)
+        {
+            handler->SendSysMessage("Market mode: data loaded, market not running (module disabled?).");
+            return true;
+        }
+        if (!market->IsReady())
+        {
+            handler->SendSysMessage(fmt::format("Market mode: setting up sellers -- {}", market->SetupNote()));
+            return true;
+        }
+        handler->SendSysMessage(fmt::format(
+            "Market mode: scale {:g}, {} Alliance / {} Horde sellers, {} listing(s) waiting to post, buy queue {}.",
+            market->GetScale(),
+            market->BotsInUse(0),
+            market->BotsInUse(1),
+            market->PendingListings(),
+            sim->GetBuyQueue().size()));
+        for (size_t faction = 0; faction < Market::kFactions; ++faction)
+        {
+            MarketService::HouseStats const& stats = market->LastStats(faction);
+            handler->SendSysMessage(fmt::format(
+                "  last step, {}: {} listings seen, {} post events, {} created ({} carried), {} buyers, {} buys "
+                "queued, {} us",
+                faction == 0 ? "Alliance" : "Horde",
+                stats.listingsSeen,
+                stats.postEvents,
+                stats.listingsCreated,
+                stats.listingsCarried,
+                stats.buyers,
+                stats.buysQueued,
+                stats.micros));
+        }
+        return true;
+    }
+
+    static bool HandleMarketReloadCommand(ChatHandler* handler)
+    {
+        AuctionSim* sim = AuctionSim::instance();
+        if (!sim)
+        {
+            return true;
+        }
+        std::string note;
+        bool ok = false;
+        long long elapsed = TimedMs([&] { ok = sim->ReloadMarket(note); });
+        std::string message =
+            fmt::format("Market reload {} in {} ms: {}", ok ? "done" : "failed", elapsed, note);
+        LOG_INFO("module", "AuctionSim: {}", message);
         handler->SendSysMessage(message);
         return true;
     }
