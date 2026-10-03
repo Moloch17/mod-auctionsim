@@ -118,7 +118,10 @@ To put a house in the state it would be in had the bots been running all along, 
    result is steady state), on virtual bot listings only: posts at their simulated times, expiry, and buyers buying
    only virtual listings. Weekday follows the simulated clock.
 3. The virtual listings still up at the end are what the bots would have up now, each with its remaining time.
-   Per item, drop as many of them as the bots already have up for that item (so a fill on a house that is already
-   full adds almost nothing), and create the rest as real auctions with their remaining time.
+   Their total S is the house's steady state; the bots already have E listings up. Add at most S - E (nothing if
+   E >= S): per item, the excess of survivors over what the bots already have up, taken item by item in random
+   order until S - E listings are chosen, and create those as real auctions with their remaining time. Items
+   average ~4 listings, so a per-item subtraction alone would add about half a house to a full one; the house
+   total keeps a fill on a full house to almost nothing while an empty house still gets all S.
 
 A fill is a one-off top-up; the normal steps continue afterwards.
