@@ -92,8 +92,8 @@ local RESULTS_HEIGHT = 130  -- viewport height; MAX_RESULT_LINES caps scrollback
 local MAX_RESULT_LINES = 200
 
 local maskEditBoxes = {}
-local enabledCheckbox, startupScanCheckbox
-local maxRequiredLevelBox, maxItemLevelBox
+local enabledCheckbox, startupScanCheckbox, marketModeCheckbox
+local maxRequiredLevelBox, maxItemLevelBox, marketBotsBox, marketScaleBox
 local resultsLog                 -- ScrollingMessageFrame, created in BuildWindow
 local pendingResultLines = {}    -- lines logged before the window exists
 local setBotCharFrame, setBotCharInput
@@ -135,6 +135,16 @@ local function FormatMaskValue(value)
         n = 0
     end
     local s = sformat("%.2f", n)
+    return (s:gsub("0+$", ""):gsub("%.$", ""))
+end
+
+-- Market Scale is a small fraction (0.1 by default): keep three decimals.
+local function FormatScaleValue(value)
+    local n = tonumber(value) or 0
+    if n < 0 then
+        n = 0
+    end
+    local s = sformat("%.3f", n)
     return (s:gsub("0+$", ""):gsub("%.$", ""))
 end
 
@@ -394,6 +404,17 @@ function AHSim.BuildWindow()
     startupScanCheckbox:SetScript("OnClick", function(self)
         SetConfigAndSave("StartupScan", self:GetChecked() and "1" or "0")
     end)
+    ly = ly + 26
+
+    -- AuctionSim.Mode: unticked = Replay, ticked = Market. Takes effect at restart.
+    marketModeCheckbox = CreateFrame("CheckButton", "AHSimMarketModeCheckbox", leftColumn, "UICheckButtonTemplate")
+    marketModeCheckbox:SetPoint("TOPLEFT", 0, -ly)
+    _G["AHSimMarketModeCheckboxText"]:SetText("Market Mode")
+    marketModeCheckbox:SetScript("OnClick", function(self)
+        local on = self:GetChecked()
+        SetConfigAndSave("Mode", on and "Market" or "Replay",
+            (on and "Market" or "Replay") .. " mode saved -- restart the worldserver to switch.")
+    end)
     ly = ly + 40
 
     local buttonGap = 6
@@ -443,6 +464,22 @@ function AHSim.BuildWindow()
     maxItemLevelBox = CreateNumberBox(content, 340, -y, 60, function(self)
         SetConfigAndSave("MaxItemLevel", self:GetText())
     end)
+
+    y = y + 30
+
+    -- Market mode (AuctionSim.Market.*). Bots apply at restart / ".auctionsim market
+    -- reload"; Scale applies from the next market step.
+    CreateLabel(content, "Market Bots:", 4, -y)
+    marketBotsBox = CreateNumberBox(content, 140, -y, 60, function(self)
+        SetConfigAndSave("MarketBots", self:GetText(), "Market Bots saved -- applies at restart.")
+    end, 4)
+
+    CreateLabel(content, "Market Scale:", 230, -y)
+    marketScaleBox = CreateNumberBox(content, 340, -y, 60, function(self)
+        local value = FormatScaleValue(self:GetText())
+        self:SetText(value)
+        SetConfigAndSave("MarketScale", value, "Market Scale saved.")
+    end, 6, true)
 
     y = y + 30
 
@@ -563,6 +600,12 @@ AHSim:RegisterHandler(OP.CONFIG, function(key, value)
         if maxRequiredLevelBox then maxRequiredLevelBox:SetText(value) end
     elseif key == "MaxItemLevel" then
         if maxItemLevelBox then maxItemLevelBox:SetText(value) end
+    elseif key == "Mode" then
+        if marketModeCheckbox then marketModeCheckbox:SetChecked(value == "Market") end
+    elseif key == "MarketBots" then
+        if marketBotsBox then marketBotsBox:SetText(value) end
+    elseif key == "MarketScale" then
+        if marketScaleBox then marketScaleBox:SetText(FormatScaleValue(value)) end
     else
         local classKey, quality = smatch(key, "^(.-)%.(.+)$")
         if classKey and maskEditBoxes[classKey] and maskEditBoxes[classKey][quality] then
@@ -666,6 +709,12 @@ AHSim:RegisterHandler(OP.NOTICE, function(kind, a, b, modVer)
             "|cffff0000AuctionSim:|r auctionsim.dat is out of date (data schema v%s vs v%s). Pull the " ..
             "latest changes and rebuild the module -- the current data file ships with the repo and is " ..
             "redeployed on build.", a, b)
+    elseif kind == "market" then
+        text = sformat(
+            "|cffff0000AuctionSim:|r Market mode is on but auctionsim_market.dat can't be used (file schema " ..
+            "v%s, needs v%s; v0 = missing). The module is not running: put a current auctionsim_market.dat in " ..
+            "etc/modules/ (rebuild the module to redeploy it) or untick Market Mode and restart. " ..
+            "\".auctionsim market status\" shows the reason.", a, b)
     elseif kind == "version" then
         if a == "?" then
             text = sformat(

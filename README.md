@@ -12,6 +12,18 @@ Every 30 minutes (fixed, not configurable), AuctionSim scans both auction houses
 - Queued buys and bids execute within 20 minutes of being queued, spread out over time. "Run Queue" in the addon (or `.auctionsim runqueue`) forces them all through immediately.
 - Optional `MaxRequiredLevel`/`MaxItemLevel` caps stop it from listing gear above your realm's level, for progression servers running below the max level.
 
+## Market mode
+
+`AuctionSim.Mode = Market` (default `Replay`, the behaviour above) runs a different market, learned from Lordaeron's scans and shipped as `data/auctionsim_market.dat` (format: `ml/MARKET_FORMAT.md`; produced by `ml/s6_export.py`):
+
+- **Named sellers.** Each faction gets `AuctionSim.Market.Bots` (default 100) seller bots whose names show as the seller in the AH. Their names come from the data file; names already taken on the realm are skipped. The module creates their characters on first start: real character rows on accounts `AHSIMMKTA01`, `AHSIMMKTA02`, ... (Alliance races) and `AHSIMMKTH01`, ... (Horde races), ten characters per account, each account with a random password nobody is told (a login on a seller is kicked anyway). They never log in, survive restarts, and their names can't be taken by players.
+- **Posts.** Every 30 minutes each seller's basket posts per the learned rates, stacks and prices: priced against the cheapest listing of the item already up (any owner, players included), never under the vendor price or, for crafted goods, the reagents' cost. Durations, deposits and expiry are the core's.
+- **Buyers.** Buyers arrive per item at learned rates (with a weekday pattern), each with a reservation price, and buy the cheapest listing at or under it -- whoever owns it, so players sell to the market by listing at a fair price. Purchases go through the bot character (`BotCharacterID`) and its queue, spread over 20 minutes. A player's listing of a vendor-stocked item is never bought above the vendor price.
+- **Gold.** The only gold that enters the economy is the price the buyer bot pays for a *player's* listing (the core's normal sale mail, minus its cut). The buyer itself is never debited. Everything paid to a seller bot -- sale proceeds, returned deposits, expired items -- is discarded, so gold players spend on bot listings leaves the economy. Seller bots hold no gold; their deposits are computed as the core would and recorded on the auction, not debited.
+- `AuctionSim.Market.Scale` (default 0.1) sizes the market as a fraction of Lordaeron's (~60k auctions per faction at 1). It doesn't depend on the realm's population.
+- `.auctionsim market status` shows the sellers in use, the last step's numbers and the work still queued; `.auctionsim market reload` re-reads `auctionsim.conf` and the data file. Without a current `auctionsim_market.dat` the module refuses to run in Market mode and tells GMs at login.
+- Cost: one pass over each house per 30 minutes; at Scale 0.1 a step's arithmetic takes about 0.5 ms per house, and auctions are created at most 100 per world tick.
+
 ## Installation
 
 1. From your AzerothCore `modules` directory:
@@ -98,11 +110,36 @@ In the "Listing Multipliers" grid on the right:
 - After that the module scans on its own on a timer.
 
 
+6. Market mode (optional)
+-------------------------
+"Market Mode" switches the module from replaying scanned prices to a market
+learned from Warmane - Lordaeron (auctionsim_market.dat). Restart the
+worldserver after ticking or unticking it.
+- Named seller bots post the auctions; their names show as the seller in the
+  AH. The module creates their characters itself on first start, on accounts
+  AHSIMMKTA01.. (Alliance) and AHSIMMKTH01.. (Horde) that nobody can log into.
+  Names already taken on your realm are skipped.
+- Buyers buy the cheapest listing they find worth it - players' listings too,
+  which is how players sell to the market. The buys still go through the bot
+  character from step 2 and the queue.
+- Market Bots: sellers per faction (default 100). Applies at restart or with
+  ".auctionsim market reload".
+- Market Scale: market size as a fraction of Lordaeron's (default 0.1, about
+  6000 auctions per faction). Applies from the next step. Your realm's
+  population doesn't matter.
+- "Scan" runs one market step. ".auctionsim market status" shows the sellers,
+  the last step's numbers and what is still waiting to post.
+- If auctionsim_market.dat is missing or out of date the module refuses to run
+  and tells GMs at login; untick Market Mode to go back to Replay.
+
+
 Button reference
 ----------------
-Scan            List new auctions and queue buys and bids now.
-Delete          Remove every bot auction nobody has bid on (bid-on ones are left
-                to expire so the bidder's gold isn't stranded).
+Scan            List new auctions and queue buys and bids now (Market mode: run
+                one market step).
+Delete          Remove every bot auction nobody has bid on, market sellers'
+                included (bid-on ones are left to expire so the bidder's gold
+                isn't stranded).
 Show Queue      Show the queue size and when the next and last action are due.
 Run Queue       Execute every queued buy and bid right now.
 Clean Over Cap  Remove bot auctions now above the level caps (again skipping
@@ -123,6 +160,9 @@ After a module update the Results box (and a GM's chat at login) may show:
   latest changes and rebuild the module; the current auctionsim.dat ships with the
   repo and is redeployed on build (you do not need the raw scans or
   data/compile-data). The module has no market data until then.
+- "auctionsim_market.dat can't be used" - Market mode is on but its data file is
+  missing or from another format version. Rebuild the module to redeploy it, or
+  switch back to Replay.
 - "addon / module version mismatch" - the AHSim addon and the server module ship
   as a pair; update whichever the message says is older.
 Each notice shows once per version, so a fixed problem stops repeating.
@@ -130,7 +170,8 @@ Each notice shows once per version, so a fixed problem stops repeating.
 
 Notes
 -----
-- Mail the bot would get from its own auctions is discarded automatically.
+- Mail the bot (and every market seller) would get from its own auctions is
+  discarded automatically.
 - Everything set here is written to auctionsim.conf, so it survives a restart.
 ```
 

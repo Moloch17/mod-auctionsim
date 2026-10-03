@@ -71,11 +71,36 @@ In the "Listing Multipliers" grid on the right:
 - After that the module scans on its own on a timer.
 
 
+6. Market mode (optional)
+-------------------------
+"Market Mode" switches the module from replaying scanned prices to a market
+learned from Warmane - Lordaeron (auctionsim_market.dat). Restart the
+worldserver after ticking or unticking it.
+- Named seller bots post the auctions; their names show as the seller in the
+  AH. The module creates their characters itself on first start, on accounts
+  AHSIMMKTA01.. (Alliance) and AHSIMMKTH01.. (Horde) that nobody can log into.
+  Names already taken on your realm are skipped.
+- Buyers buy the cheapest listing they find worth it - players' listings too,
+  which is how players sell to the market. The buys still go through the bot
+  character from step 2 and the queue.
+- Market Bots: sellers per faction (default 100). Applies at restart or with
+  ".auctionsim market reload".
+- Market Scale: market size as a fraction of Lordaeron's (default 0.1, about
+  6000 auctions per faction). Applies from the next step. Your realm's
+  population doesn't matter.
+- "Scan" runs one market step. ".auctionsim market status" shows the sellers,
+  the last step's numbers and what is still waiting to post.
+- If auctionsim_market.dat is missing or out of date the module refuses to run
+  and tells GMs at login; untick Market Mode to go back to Replay.
+
+
 Button reference
 ----------------
-Scan            List new auctions and queue buys and bids now.
-Delete          Remove every bot auction nobody has bid on (bid-on ones are left
-                to expire so the bidder's gold isn't stranded).
+Scan            List new auctions and queue buys and bids now (Market mode: run
+                one market step).
+Delete          Remove every bot auction nobody has bid on, market sellers'
+                included (bid-on ones are left to expire so the bidder's gold
+                isn't stranded).
 Show Queue      Show the queue size and when the next and last action are due.
 Run Queue       Execute every queued buy and bid right now.
 Clean Over Cap  Remove bot auctions now above the level caps (again skipping
@@ -96,6 +121,9 @@ After a module update the Results box (and a GM's chat at login) may show:
   latest changes and rebuild the module; the current auctionsim.dat ships with the
   repo and is redeployed on build (you do not need the raw scans or
   data/compile-data). The module has no market data until then.
+- "auctionsim_market.dat can't be used" - Market mode is on but its data file is
+  missing or from another format version. Rebuild the module to redeploy it, or
+  switch back to Replay.
 - "addon / module version mismatch" - the AHSim addon and the server module ship
   as a pair; update whichever the message says is older.
 Each notice shows once per version, so a fixed problem stops repeating.
@@ -103,6 +131,7 @@ Each notice shows once per version, so a fixed problem stops repeating.
 
 Notes
 -----
-- Mail the bot would get from its own auctions is discarded automatically.
+- Mail the bot (and every market seller) would get from its own auctions is
+  discarded automatically.
 - Everything set here is written to auctionsim.conf, so it survives a restart.
 ]]
