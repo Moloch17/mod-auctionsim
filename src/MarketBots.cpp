@@ -251,6 +251,7 @@ namespace Market
                     AccountOpResult result = sAccountMgr->CreateAccount(name, RandomPassword());
                     if (result != AOR_OK && result != AOR_NAME_ALREADY_EXIST)
                     {
+                        _pendingTries = 0;
                         note = Acore::StringFormat("couldn't create bot account {} (AccountMgr error {})", name,
                             static_cast<uint32>(result));
                         return Result::Failed;
@@ -267,6 +268,8 @@ namespace Market
         {
             if (++_pendingTries > kMaxPendingTries)
             {
+                _pendingTries = 0;  // a later reload starts a fresh wait
+                _requestedAccounts.clear();
                 note = "market bot accounts were requested but never appeared in the auth database";
                 return Result::Failed;
             }

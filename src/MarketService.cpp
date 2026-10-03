@@ -141,7 +141,10 @@ void MarketService::Update(uint32 diff)
         if (_setupRetryTimer >= kSetupRetryMs)
         {
             _setupRetryTimer = 0;
-            SetupBots(_wantedBots);
+            if (SetupBots(_wantedBots) == Market::BotRoster::Result::Ready && _stepRequested)
+            {
+                Step();  // a step (startup scan, ".auctionsim scan") asked for while waiting
+            }
         }
     }
 
@@ -172,8 +175,10 @@ void MarketService::Step()
 {
     if (!_ready)
     {
+        _stepRequested = _setupPending;
         return;
     }
+    _stepRequested = false;
     for (size_t faction = 0; faction < Market::kFactions; ++faction)
     {
         if (_data.factions[faction].present)
@@ -188,12 +193,13 @@ void MarketService::StepHouse(size_t faction)
 {
     auto start = std::chrono::steady_clock::now();
     Market::Faction const& fac = _data.factions[faction];
+    Market::Engine& engine = _engines[faction];
     AuctionHouseId const houseId = HouseOf(faction);
     AuctionHouseObject* house = sAuctionMgr->GetAuctionsMapByHouseId(houseId);
     HouseStats stats;
 
     // One pass over the house: every auction of an item the market knows, all owners.
-    std::vector<Market::Listing>& listings = _engine.Listings();
+    std::vector<Market::Listing>& listings = engine.Listings();
     listings.clear();
     for (auto const& entry : house->GetAuctions())
     {
@@ -224,11 +230,11 @@ void MarketService::StepHouse(size_t faction)
         listings.push_back(listing);
     }
     stats.listingsSeen = static_cast<uint32>(listings.size());
-    _engine.BuildState(fac.items.size());
+    engine.BuildState(fac.items.size());
 
     // 1. Posts, priced from the state above; created now up to the tick budget.
     _orders.clear();
-    _engine.PlanPosts(fac, BotsInUse(faction), _rng, _orders);
+    engine.PlanPosts(fac, BotsInUse(faction), _rng, _orders);
     stats.postEvents = static_cast<uint32>(_orders.size());
     if (!_orders.empty())
     {
@@ -247,14 +253,14 @@ void MarketService::StepHouse(size_t faction)
         CharacterDatabase.CommitTransaction(trans);
         if (stats.listingsCreated > 0)
         {
-            _engine.BuildState(fac.items.size());  // this step's buyers see this step's posts
+            engine.BuildState(fac.items.size());  // this step's buyers see this step's posts
         }
     }
 
     // 2. Buyers, queued so their purchases spread over the next 20 minutes.
     _claims.clear();
     time_t const now = GameTime::GetGameTime().count();
-    stats.buyers = _engine.PlanBuys(fac, static_cast<double>(_scale) * kStepHours, Weekday(now), _rng, _claims);
+    stats.buyers = engine.PlanBuys(fac, static_cast<double>(_scale) * kStepHours, Weekday(now), _rng, _claims);
     for (uint32 index : _claims)
     {
         Market::Listing const& listing = listings[index];
@@ -360,7 +366,7 @@ uint32 MarketService::CreateListings(
             listing.auctionId = auction->Id;
             listing.expire = static_cast<uint32>(auction->expire_time);
             listing.flags = Market::Listing::kBuyable;
-            _engine.Listings().push_back(listing);
+            _engines[faction].Listings().push_back(listing);
         }
     }
     return made;

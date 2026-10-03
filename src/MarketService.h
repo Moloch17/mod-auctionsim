@@ -51,7 +51,8 @@ public:
     // Per world tick: retries a pending bot setup and creates carried-over posts.
     void Update(uint32 diff);
 
-    // One market step on both houses. No-op until IsReady().
+    // One market step on both houses. Until IsReady() it only remembers the request
+    // and runs it once a pending setup completes.
     void Step();
 
     struct HouseStats
@@ -98,11 +99,13 @@ private:
     uint32 _wantedBots = 0;
     bool _ready = false;
     bool _setupPending = false;
+    bool _stepRequested = false;  // Step() was called while the setup was pending
     std::string _setupNote;
     uint32 _setupRetryTimer = 0;
 
     Market::Rng _rng;
-    Market::Engine _engine;
+    // One engine per house: each keeps its own buffers and buyer-rate cache.
+    std::array<Market::Engine, Market::kFactions> _engines;
     std::vector<Market::PostOrder> _orders;
     std::vector<uint32> _claims;
     std::vector<PendingPost> _pending;
