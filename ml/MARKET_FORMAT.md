@@ -83,25 +83,26 @@ A crafted item's posting price is also never below `margin` × Σ(qty × reagent
 that reagent up, else its `ref`. `margin` repeats on each of the item's rows.
 
 ### BOT — the named sellers, 1 row per bot
-`faction:bot:name:type`
+`faction:bot:name:type` (`type` is the type the name was picked from; postings use BASKET's `type`)
 `bot` is 0-based per faction, in the order a realm should use them; a realm configured for N bots takes the first N
 names that are free on it. Names are sellers' names from the Lordaeron scans (letters only, 2-12 chars, WoW rules),
 picked per seller type in proportion to the type's posting volume; the file carries spares beyond 100.
 
 ### BASKET — what each bot posts
-`faction:bot:item:rateH:tl4:batch`
-- `rateH` — posting events per hour on Lordaeron (before `supplyScale` and `Market.Scale`), for a 100-bot set
+`faction:bot:item:type:rateH:tl4:batch`
+- `type` — the seller type whose habits this row carries (prices it via `POLICY`/`STACK`)
+- `rateH` — posting events per hour on Lordaeron (before `supplyScale` and `Market.Scale`)
 - `tl4` — share of its posts that are long (48 h / 24 h, equal odds); the rest are 12 h
 - `batch` — mean listings per posting event; listings per event = 1 + Poisson(batch - 1), all at the same price/stack
 
 ## Runtime (what both implementations do)
 
-Every step of `dt` hours (module: its 30-minute timer, dt = 0.5), per faction house, with `S = Market.Scale ×
-(100 / bots in use)` applied to posting rates and `Market.Scale` to buyer rates:
+Every step of `dt` hours (module: its 30-minute timer, dt = 0.5), per faction house, with N bots in use:
 
-1. **Posts.** For each basket row, events ~ Poisson(rateH × supplyScale × S × dt). For each event: count listings,
-   draw stack from `STACK`, price from `POLICY` using the house's current state for the item (all owners, players
-   included), floor at `vendor` and the `CRAFT` floor, duration from `tl4`. Deposit as the core charges it.
+1. **Posts.** For each basket row, events ~ Poisson(rateH × supplyScale × Market.Scale × dt), posted as bot
+   `bot mod N` (so the market's volume doesn't depend on N). For each event: count listings, draw stack from
+   `STACK` and price from `POLICY` with the row's `type`, using the house's current state for the item (all owners,
+   players included), floor at `vendor` and the `CRAFT` floor, duration from `tl4`. Deposit as the core charges it.
 2. **Buyers.** For each item, arrivals ~ Poisson(buyersH × demandScale × Market.Scale × weekday × dt). Each draws a
    reservation and buys the cheapest listing with buyout ≤ reservation, whole, whoever owns it (players' listings
    included: that is how players sell to the market); none → it leaves.
