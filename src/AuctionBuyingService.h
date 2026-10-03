@@ -10,15 +10,25 @@
 class Bot;
 
 // Owns the "buy" side of the bot: candidates found during a scan are queued,
-// then executed a few at a time as their rolled buy time comes due.
+// then executed a few at a time as their rolled buy time comes due. A queued
+// entry is either a full buyout or a small outbid on an auction a real player is
+// already bidding on -- both share one queue and one dedupe set.
 class AuctionBuyingService
 {
 public:
     struct QueuedPurchase
     {
-        uint32 auctionId;
-        AuctionHouseId houseId;
-        time_t buyTime;
+        // No AuctionEntry* is kept: a player could buy it out, or it could expire or be
+        // cancelled, during the delay. Both paths re-fetch by auctionId + houseId.
+        uint32 auctionId = 0;
+        AuctionHouseId houseId{};
+        time_t buyTime = 0;
+        enum class Action
+        {
+            Buyout,
+            Bid
+        } action = Action::Buyout;
+        uint32 marketCeilingPerUnit = 0;  // bid path: walk away once a rival pushes past this
     };
 
     explicit AuctionBuyingService(Bot& bot);
@@ -36,12 +46,24 @@ public:
     void ConsiderForPurchase(
         AuctionEntry* auction, uint32 pricePerItem, uint32 marketPrice, uint32 ceilingPrice);
 
+    // Called for an auction that already carries a real player's high bid. Queues
+    // a single small outbid (the game's ~5% minimum increment) if that next bid,
+    // per unit, would land below marketPrice -- and then only on a probabilistic
+    // roll (see AuctionPricing::ShouldBidAtPrice). No-op if the auction is already
+    // queued (shares _queuedAuctionIds with the buyout path).
+    void ConsiderForBid(AuctionEntry* auction, uint32 marketPrice);
+
     // Sorts the queue so the soonest-due purchase is processed first. Call once
     // after a scan pass has finished calling ConsiderForPurchase.
     void SortQueue();
 
-    // Executes at most one due purchase from the queue. Safe to call every tick.
+    // Executes at most one due action from the queue. Safe to call every tick.
     void ProcessDueQueue();
+
+    // Executes every queued action right now, regardless of its rolled buy time,
+    // and clears the queue. Returns how many were run. For the ".auctionsim
+    // runqueue" command / the addon's "Run Queue" button.
+    size_t DrainQueue();
 
     size_t QueueSize() const { return _queue.size(); }
 
@@ -53,9 +75,12 @@ public:
     // Test-support: forces an auction directly into the queue with an explicit buyTime,
     // bypassing ConsiderForPurchase's price/RNG logic, for deterministic tests.
     void EnqueueForTest(AuctionEntry* auction, time_t buyTime);
+    void EnqueueBidForTest(AuctionEntry* auction, time_t buyTime, uint32 marketCeilingPerUnit);
 
 private:
-    void BuyItem(AuctionEntry* auction, AuctionHouseId houseId);
+    void Execute(QueuedPurchase const& entry);
+    void BuyItem(QueuedPurchase const& entry);
+    void PlaceBid(QueuedPurchase const& entry);
 
     Bot& _bot;
     AuctionPricing::BuyTolerance _tolerance{};

@@ -34,6 +34,13 @@ namespace AuctionSimTests
     TestResult RunLiveBuyingTest(
         Bot& bot, ASConfig const& config, AuctionListingService& listingService, AuctionHouseId houseId);
 
+    // End-to-end: lists one real temporary auction, simulates a player bid on it,
+    // forces a due bid into a throwaway AuctionBuyingService, processes the queue,
+    // and verifies the bot outbid the player WITHOUT consuming the auction (it stays
+    // in the house, bidder/bid updated). Does not touch the real bot's live queue.
+    TestResult RunLiveBiddingTest(
+        Bot& bot, ASConfig const& config, AuctionListingService& listingService, AuctionHouseId houseId);
+
     // End-to-end: verifies AuctionListingService::ListOneItem actually enforces the
     // level caps, not just that AuctionPricing::IsWithinLevelCap is correct in isolation.
     // Temporarily overrides config's caps (restoring them before returning, even on

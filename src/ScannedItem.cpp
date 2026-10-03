@@ -69,7 +69,7 @@ std::optional<ScannedItem> ScannedItem::TryParse(std::string_view dataLine)
         return std::nullopt;
     }
 
-    StatBlock* const blocks[kStatBlockCount] = {&item.price, &item.stack, &item.listing};
+    StatBlock* const blocks[kStatBlockCount] = {&item.price, &item.stack, &item.listing, &item.bidRatio};
     for (size_t b = 0; b < kStatBlockCount; ++b)
     {
         if (!ParseStatBlock(f, kIdentityFields + b * kStatsPerBlock, *blocks[b]))
@@ -78,7 +78,9 @@ std::optional<ScannedItem> ScannedItem::TryParse(std::string_view dataLine)
         }
     }
 
-    if (!ASParse::ClampedU32(f[kRowFields - 1], item.listingSnapshotCount))
+    // Two trailing counts: bidRatioSampleCount, then listingSnapshotCount (last).
+    if (!ASParse::ClampedU32(f[kRowFields - 2], item.bidRatioSampleCount) ||
+        !ASParse::ClampedU32(f[kRowFields - 1], item.listingSnapshotCount))
     {
         return std::nullopt;
     }
@@ -112,3 +114,16 @@ uint32 ScannedItem::GetTypicalListingCount() const
 {
     return FirstPositive({listing.adjMedian, listing.adjMean, listing.median, listing.mean}, 1);
 }
+
+uint32 ScannedItem::GetBidRatioTypicalBp() const
+{
+    // Same "prefer the trimmed stat, fall back through the raw ones" order as the
+    // price getters; a fully degenerate bucket means "no bid data" -> ratio 1.0.
+    uint32 bp = FirstPositive({bidRatio.adjMedian, bidRatio.adjMean, bidRatio.median, bidRatio.mean}, 0);
+    return bp > 0 ? bp : 10000;
+}
+
+uint32 ScannedItem::GetBidRatioLowBp() const { return FirstPositive({bidRatio.adjLow}, GetBidRatioTypicalBp()); }
+uint32 ScannedItem::GetBidRatioHighBp() const { return FirstPositive({bidRatio.adjHigh}, GetBidRatioTypicalBp()); }
+
+float ScannedItem::GetBidRatioTypical() const { return GetBidRatioTypicalBp() / 10000.0f; }

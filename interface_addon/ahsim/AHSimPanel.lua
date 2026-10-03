@@ -406,6 +406,9 @@ function AHSim.BuildWindow()
         leftColumn, "Show Queue", 0, -ly, LEFT_COLUMN_WIDTH, function() AHSim:Send(OP.SHOWQUEUE) end)
     ly = ly + buttonStep
     CreateCommandButton(
+        leftColumn, "Run Queue", 0, -ly, LEFT_COLUMN_WIDTH, function() AHSim:Send(OP.RUNQUEUE) end)
+    ly = ly + buttonStep
+    CreateCommandButton(
         leftColumn, "Clean Over Cap", 0, -ly, LEFT_COLUMN_WIDTH, function() AHSim:Send(OP.CLEANOVERCAP) end)
     ly = ly + buttonStep
     CreateCommandButton(leftColumn, "Run Tests", 0, -ly, LEFT_COLUMN_WIDTH, function() AHSim:Send(OP.TEST) end)
@@ -592,6 +595,10 @@ AHSim:RegisterHandler(OP.QUEUEINFO, function(size, nextBuyIn, lastBuyIn)
     AddResultLine(sformat("Queue: %s item(s). Next buy in %ss, last buy in %ss.", size, nextBuyIn, lastBuyIn))
 end)
 
+AHSim:RegisterHandler(OP.RUNQUEUERESULT, function(elapsedMs, count)
+    AddResultLine(sformat("Ran %s queued action(s) in %sms.", count, elapsedMs))
+end)
+
 AHSim:RegisterHandler(OP.CLEANRESULT, function(removed, elapsedMs)
     AddResultLine(sformat("Removed %s over-cap auction(s) in %sms.", removed, elapsedMs))
 end)
@@ -624,4 +631,62 @@ AHSim:RegisterHandler(OP.SETBOTCHARRESULT, function(status, name, characterId, a
         -- failure: the server puts the reason in the first field
         AddResultLine("|cffff0000Set Bot Char failed:|r " .. (name or "unknown error"))
     end
+end)
+
+-- NOTICE\t<kind>\t<a>\t<b>\t<moduleVersion> -- outdated config/data or a module<->
+-- addon version mismatch. Shown once per distinct (kind, a, b, moduleVersion) via
+-- AHSimDB, so a fixed problem stops nagging but a new release re-shows it.
+local function ParseVer(s)
+    local a, b, c = tostring(s):match("^(%d+)%.(%d+)%.?(%d*)")
+    return tonumber(a) or 0, tonumber(b) or 0, tonumber(c) or 0
+end
+local function VerLess(x, y)
+    local x1, x2, x3 = ParseVer(x)
+    local y1, y2, y3 = ParseVer(y)
+    if x1 ~= y1 then return x1 < y1 end
+    if x2 ~= y2 then return x2 < y2 end
+    return x3 < y3
+end
+
+AHSim:RegisterHandler(OP.NOTICE, function(kind, a, b, modVer)
+    AHSimDB = AHSimDB or {}
+    AHSimDB.seenNotices = AHSimDB.seenNotices or {}
+    local key = table.concat({ tostring(kind), tostring(a), tostring(b), tostring(modVer) }, ":")
+    if AHSimDB.seenNotices[key] then
+        return
+    end
+
+    local text
+    if kind == "config" then
+        text = sformat(
+            "|cffff8000AuctionSim:|r your auctionsim.conf is out of date (config schema v%s < v%s). " ..
+            "A current auctionsim.conf.dist is in etc/modules/ -- merge the new keys.", a, b)
+    elseif kind == "data" then
+        text = sformat(
+            "|cffff0000AuctionSim:|r auctionsim.dat is out of date (data schema v%s vs v%s). Pull the " ..
+            "latest changes and rebuild the module -- the current data file ships with the repo and is " ..
+            "redeployed on build.", a, b)
+    elseif kind == "version" then
+        if a == "?" then
+            text = sformat(
+                "|cffff8000AuctionSim:|r the server module is v%s; your addon did not report a version " ..
+                "-- reinstall the AHSim addon.", b)
+        elseif VerLess(a, b) then
+            text = sformat(
+                "|cffff8000AuctionSim:|r your AHSim addon (v%s) is older than the server module (v%s) " ..
+                "-- update the addon.", a, b)
+        elseif VerLess(b, a) then
+            text = sformat(
+                "|cffff8000AuctionSim:|r the server module (v%s) is older than your AHSim addon (v%s) " ..
+                "-- update / rebuild the module.", b, a)
+        else
+            AHSimDB.seenNotices[key] = true  -- cosmetic-only difference; don't nag
+            return
+        end
+    else
+        return
+    end
+
+    AHSimDB.seenNotices[key] = true
+    AddResultLine(text)
 end)

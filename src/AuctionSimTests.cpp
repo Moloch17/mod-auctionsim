@@ -197,7 +197,7 @@ namespace
 
     TestResult TestScannedItemParse()
     {
-        // Old shorter formats are rejected: rows are a fixed 41 fields now.
+        // Old shorter formats are rejected: rows are a fixed 54 fields now.
         if (ScannedItem::TryParse("6:6543:-19:23229:8000:99000"))
         {
             return Fail("ScannedItem parse", "6-field (old format) line was accepted");
@@ -207,20 +207,34 @@ namespace
         {
             return Fail("ScannedItem parse", "16-field (old gear format) line was accepted");
         }
+        // The pre-bid 41-field format is also rejected now.
+        if (ScannedItem::TryParse(
+                "6:6543:-19:12"
+                ":8000:99000:23229:30000:8000:19000:30843:8100:31686:23000:29500:8000"
+                ":2:20:14:20:20:5:20:2:20:14:20:20"
+                ":1:12:4:3:2:2:6:1:9:4:3:2"
+                ":47"))
+        {
+            return Fail("ScannedItem parse", "41-field (pre-bid format) line was accepted");
+        }
 
-        // 4 identity + 12 price + 12 stack + 12 listing-count + listingSnapshotCount.
-        //   price : adjLow 8100  adjHigh 31686  adjMedian 29500  q3 30843
-        //   stack : adjMode 20   adjLow 2       adjHigh 20
-        //   list  : adjMedian 3                 snapshotCount 47
+        // 4 identity + 12 price + 12 stack + 12 listing-count + 12 bid-ratio
+        //   + bidRatioSampleCount + listingSnapshotCount = 54.
+        //   price    : adjLow 8100  adjHigh 31686  adjMedian 29500  q3 30843
+        //   stack    : adjMode 20   adjLow 2       adjHigh 20
+        //   list     : adjMedian 3                 snapshotCount 47
+        //   bidRatio : adjLow 5000  adjHigh 9000   adjMedian 7000   sampleCount 9
         auto parsed = ScannedItem::TryParse(
             "6:6543:-19:12"
             ":8000:99000:23229:30000:8000:19000:30843:8100:31686:23000:29500:8000"
             ":2:20:14:20:20:5:20:2:20:14:20:20"
             ":1:12:4:3:2:2:6:1:9:4:3:2"
+            ":4000:9500:7000:7100:7000:5500:8500:5000:9000:7050:7000:7000"
+            ":9"
             ":47");
         if (!parsed)
         {
-            return Fail("ScannedItem parse", "valid 41-field line was rejected");
+            return Fail("ScannedItem parse", "valid 54-field line was rejected");
         }
 
         ScannedItem const& s = *parsed;
@@ -261,7 +275,45 @@ namespace
                 "ScannedItem parse",
                 Acore::StringFormat("listing snapshot count {} (expected 47)", s.GetListingSnapshotCount()));
         }
+        if (s.GetBidRatioTypicalBp() != 7000 || s.GetBidRatioLowBp() != 5000 || s.GetBidRatioHighBp() != 9000)
+        {
+            return Fail(
+                "ScannedItem parse",
+                Acore::StringFormat(
+                    "bid-ratio bp: typical={} low={} high={} (expected 7000/5000/9000)",
+                    s.GetBidRatioTypicalBp(), s.GetBidRatioLowBp(), s.GetBidRatioHighBp()));
+        }
+        if (s.GetBidRatioSampleCount() != 9)
+        {
+            return Fail(
+                "ScannedItem parse",
+                Acore::StringFormat("bid-ratio sample count {} (expected 9)", s.GetBidRatioSampleCount()));
+        }
         return Pass("ScannedItem parse");
+    }
+
+    TestResult TestDataVersionHeaderParse()
+    {
+        bool consumed = false;
+
+        if (ASConfig::ParseDataVersionLine("AUCTIONSIM_DAT 1", consumed) != 1 || !consumed)
+        {
+            return Fail("Data version header parse", "'AUCTIONSIM_DAT 1' did not parse as (1, consumed)");
+        }
+        if (ASConfig::ParseDataVersionLine("AUCTIONSIM_DAT 7", consumed) != 7 || !consumed)
+        {
+            return Fail("Data version header parse", "'AUCTIONSIM_DAT 7' did not parse as (7, consumed)");
+        }
+        // A legacy unversioned file: line 1 is the "N M" header, no stamp.
+        if (ASConfig::ParseDataVersionLine("131615 108", consumed) != 0 || consumed)
+        {
+            return Fail("Data version header parse", "legacy 'N M' line was treated as a version stamp");
+        }
+        if (ASConfig::ParseDataVersionLine("AUCTIONSIM_DAT", consumed) != 0 || consumed)
+        {
+            return Fail("Data version header parse", "'AUCTIONSIM_DAT' with no number was accepted");
+        }
+        return Pass("Data version header parse");
     }
 
     TestResult TestRollBuyToleranceBounds()
@@ -301,9 +353,9 @@ namespace
     {
         constexpr time_t now = 1'000'000;
 
-        // Plenty of time left -- delay must be capped at 45 minutes and never past expiry.
+        // Plenty of time left -- delay must be capped at 20 minutes and never past expiry.
         time_t farBuyTime = AuctionPricing::RollBuyTime(now + 100000, now);
-        if (farBuyTime < now || farBuyTime > now + 2700)
+        if (farBuyTime < now || farBuyTime > now + 1200)
         {
             return Fail("RollBuyTime bounds", Acore::StringFormat("far case rolled {}", farBuyTime - now));
         }
@@ -564,6 +616,205 @@ namespace
         return Pass("Buy queue leaves not-yet-due items alone");
     }
 
+    TestResult TestRollStartBidBounds()
+    {
+        // Healthy sample: startbid stays inside [buyout*lowRatio, buyout*highRatio].
+        for (int i = 0; i < 200; i++)
+        {
+            uint32 startbid = AuctionPricing::RollStartBid(100000, 5000, 7000, 9000, 40);
+            if (startbid < 1 || startbid > 100000)
+            {
+                return Fail("RollStartBid bounds", Acore::StringFormat("healthy sample rolled {}", startbid));
+            }
+            if (startbid < 45000 || startbid > 95000)  // 0.45..0.95 of buyout, +slack
+            {
+                return Fail(
+                    "RollStartBid bounds",
+                    Acore::StringFormat("healthy sample {} outside the ratio band", startbid));
+            }
+        }
+
+        // Thin sample: small synthetic band around typical ratio (0.70 -> ~0.644..0.756).
+        for (int i = 0; i < 200; i++)
+        {
+            uint32 startbid = AuctionPricing::RollStartBid(100000, 7000, 7000, 7000, 1);
+            if (startbid < 60000 || startbid > 80000)
+            {
+                return Fail("RollStartBid bounds", Acore::StringFormat("thin sample rolled {}", startbid));
+            }
+        }
+
+        // Ratio > 1.0 (bad data) still yields startbid <= buyout.
+        for (int i = 0; i < 50; i++)
+        {
+            uint32 startbid = AuctionPricing::RollStartBid(5000, 9000, 12000, 15000, 40);
+            if (startbid < 1 || startbid > 5000)
+            {
+                return Fail("RollStartBid bounds", Acore::StringFormat("ratio>1 rolled {}", startbid));
+            }
+        }
+
+        // Degenerate buyout.
+        if (AuctionPricing::RollStartBid(1, 5000, 7000, 9000, 40) != 1)
+        {
+            return Fail("RollStartBid bounds", "buyout 1 did not return startbid 1");
+        }
+
+        return Pass("RollStartBid bounds");
+    }
+
+    TestResult TestShouldBidAtPriceBoundaries()
+    {
+        // Hard gate: never at or above market, never with market 0.
+        if (AuctionPricing::ShouldBidAtPrice(100, 100))
+        {
+            return Fail("ShouldBidAtPrice boundaries", "bid equal to market was allowed");
+        }
+        if (AuctionPricing::ShouldBidAtPrice(150, 100))
+        {
+            return Fail("ShouldBidAtPrice boundaries", "bid above market was allowed");
+        }
+        if (AuctionPricing::ShouldBidAtPrice(50, 0))
+        {
+            return Fail("ShouldBidAtPrice boundaries", "bid allowed with market price 0");
+        }
+
+        // Per-scan roll below market: a clear deal (well under market) fires more
+        // often than a slim margin (just under market), and neither is a certainty.
+        int dealHits = 0, thinHits = 0;
+        for (int i = 0; i < 600; i++)
+        {
+            if (AuctionPricing::ShouldBidAtPrice(50, 100)) dealHits++;   // position 0.50 -> deal tier
+            if (AuctionPricing::ShouldBidAtPrice(95, 100)) thinHits++;   // position 0.95 -> thin tier
+        }
+        if (dealHits == 0 || dealHits == 600)
+        {
+            return Fail(
+                "ShouldBidAtPrice boundaries",
+                Acore::StringFormat("deal tier not probabilistic ({}/600)", dealHits));
+        }
+        if (thinHits >= dealHits)
+        {
+            return Fail(
+                "ShouldBidAtPrice boundaries",
+                Acore::StringFormat("thin tier ({}) did not fire less than deal tier ({})", thinHits, dealHits));
+        }
+
+        return Pass("ShouldBidAtPrice boundaries");
+    }
+
+    TestResult TestBidQueueHardGate(Bot& bot)
+    {
+        AuctionEntry* testAuction = MakeTestAuctionEntry(0xFFFFFFE0, GameTime::GetGameTime().count() + 100000);
+        testAuction->itemCount = 1;
+        testAuction->bid = 1'000'000;  // next bid (+5%) is way over any sane market
+
+        AuctionBuyingService testService(bot);
+        testService.RollTolerance();
+        for (int i = 0; i < 50; i++)
+        {
+            testService.ConsiderForBid(testAuction, 100);  // market far below the next bid
+        }
+        bool ok = testService.QueueSize() == 0;
+
+        delete testAuction;
+
+        if (!ok)
+        {
+            return Fail("Bid queue hard gate", "an above-market outbid was queued");
+        }
+        return Pass("Bid queue hard gate");
+    }
+
+    TestResult TestBidQueueSharesBuyoutDedupe(Bot& bot)
+    {
+        AuctionEntry* testAuction = MakeTestAuctionEntry(0xFFFFFFE1, GameTime::GetGameTime().count() + 100000);
+        testAuction->itemCount = 1;
+        testAuction->bid = 10;
+        testAuction->bidder = ObjectGuid::Create<HighGuid::Player>(0x00F00001u);
+
+        AuctionBuyingService testService(bot);
+        testService.RollTolerance();
+        testService.ConsiderForPurchase(testAuction, 1, 1'000'000, 2'000'000);  // always-buy
+        testService.ConsiderForBid(testAuction, 1'000'000);                     // must be a no-op
+        bool ok = testService.QueueSize() == 1;
+
+        delete testAuction;
+
+        if (!ok)
+        {
+            return Fail(
+                "Bid queue shares buyout dedupe",
+                "an auction already queued for buyout was also queued for a bid");
+        }
+        return Pass("Bid queue shares buyout dedupe");
+    }
+
+    TestResult TestProcessDueQueueBidRevalidatesMissing(Bot& bot)
+    {
+        time_t now = GameTime::GetGameTime().count();
+        AuctionEntry* testAuction = MakeTestAuctionEntry(0xFFFFFFE2, now + 100000);
+        testAuction->houseId = AuctionHouseId::Alliance;  // a real map that does not hold this id
+        testAuction->itemCount = 1;
+        testAuction->bid = 10;
+        testAuction->bidder = ObjectGuid::Create<HighGuid::Player>(0x00F00002u);
+
+        AuctionBuyingService testService(bot);
+        testService.EnqueueBidForTest(testAuction, now - 1, 1'000'000);  // already due
+        testService.ProcessDueQueue();  // PlaceBid re-fetches by id, finds nothing, no-ops
+        bool ok = testService.QueueSize() == 0;
+
+        delete testAuction;
+
+        if (!ok)
+        {
+            return Fail("Bid queue revalidates missing auction", "queue was not drained");
+        }
+        return Pass("Bid queue revalidates missing auction");
+    }
+
+    TestResult TestDrainQueueRunsAllActions(Bot& bot)
+    {
+        time_t future = GameTime::GetGameTime().count() + 100000;
+        AuctionEntry* a1 = MakeTestAuctionEntry(0xFFFFFFD0, future);
+        AuctionEntry* a2 = MakeTestAuctionEntry(0xFFFFFFD1, future);
+        AuctionEntry* a3 = MakeTestAuctionEntry(0xFFFFFFD2, future);
+        for (AuctionEntry* a : {a1, a2, a3})
+        {
+            a->houseId = AuctionHouseId::Alliance;  // none are actually in the map -> executions no-op
+            a->itemCount = 1;
+        }
+        a3->bid = 10;
+        a3->bidder = ObjectGuid::Create<HighGuid::Player>(0x00F00003u);
+
+        AuctionBuyingService testService(bot);
+        testService.EnqueueForTest(a1, future);       // not due
+        testService.EnqueueForTest(a2, future);       // not due
+        testService.EnqueueBidForTest(a3, future, 1'000'000);
+
+        testService.ProcessDueQueue();               // nothing due -> processes none
+        bool noneDue = testService.QueueSize() == 3;
+
+        size_t ran = testService.DrainQueue();       // forces all three through regardless of buyTime
+        bool drained = ran == 3 && testService.QueueSize() == 0;
+
+        delete a1;
+        delete a2;
+        delete a3;
+
+        if (!noneDue)
+        {
+            return Fail("Drain queue runs all actions", "ProcessDueQueue ran a not-yet-due action");
+        }
+        if (!drained)
+        {
+            return Fail(
+                "Drain queue runs all actions",
+                Acore::StringFormat("DrainQueue ran {} of 3 and left {} queued", ran, testService.QueueSize()));
+        }
+        return Pass("Drain queue runs all actions");
+    }
+
     ScannedItem const* FindListableCandidate(ASConfig const& config, AuctionHouseId houseId)
     {
         for (ScannedItem const& item : config.ScanData)
@@ -645,10 +896,13 @@ namespace AuctionSimTests
             TestIsListablePriceBoundary(),
             TestRollAuctionDurationBounds(),
             TestScannedItemParse(),
+            TestDataVersionHeaderParse(),
             TestCategoryDepthParse(config),
             TestRollBuyoutPriceSanity(),
+            TestRollStartBidBounds(),
             TestRollBuyToleranceBounds(),
             TestShouldBuyAtPriceBoundaries(),
+            TestShouldBidAtPriceBoundaries(),
             TestRollBuyTimeBounds(),
             TestCalculateRemainingScans(),
             TestListingCountMath(),
@@ -659,6 +913,10 @@ namespace AuctionSimTests
             TestBuyQueuePopulatesOnQualifyingPrice(bot),
             TestBuyQueueDedupesRescan(bot),
             TestBuyQueueNotYetDue(bot),
+            TestBidQueueHardGate(bot),
+            TestBidQueueSharesBuyoutDedupe(bot),
+            TestProcessDueQueueBidRevalidatesMissing(bot),
+            TestDrainQueueRunsAllActions(bot),
         };
     }
 
@@ -757,6 +1015,73 @@ namespace AuctionSimTests
         return Pass(
             name,
             Acore::StringFormat("bought and removed item {} (auction {})", candidate->GetItemID(), auctionId));
+    }
+
+    TestResult RunLiveBiddingTest(
+        Bot& bot, ASConfig const& config, AuctionListingService& listingService, AuctionHouseId houseId)
+    {
+        char const* houseName = houseId == AuctionHouseId::Alliance ? "Alliance" : "Horde";
+        std::string name = Acore::StringFormat("Live bidding round-trip ({})", houseName);
+
+        if (!bot.GetPlayer())
+        {
+            return Fail(name, "bot has no Player");
+        }
+
+        ScannedItem const* candidate = FindListableCandidate(config, houseId);
+        if (!candidate)
+        {
+            return Fail(name, "no usable price data entry found for this house");
+        }
+
+        AuctionEntry* auction = listingService.ListTestItem(*candidate, houseId);
+        if (!auction)
+        {
+            return Fail(name, Acore::StringFormat("ListTestItem returned null for item {}", candidate->GetItemID()));
+        }
+        uint32 auctionId = auction->Id;
+
+        // Simulate a real player already holding the high bid at the starting bid.
+        // The guid resolves to no character, so SendAuctionOutbiddedMail is a no-op.
+        uint32 playerBid = auction->startbid;
+        auction->bid = playerBid;
+        auction->bidder = ObjectGuid::Create<HighGuid::Player>(0x00FB1D00u);
+        uint32 expectedBid = playerBid + AuctionEntry::CalculateAuctionOutBid(playerBid);
+
+        // Throwaway service; a huge ceiling so the walk-away guard never trips.
+        AuctionBuyingService testService(bot);
+        testService.EnqueueBidForTest(auction, GameTime::GetGameTime().count() - 1, 0xFFFFFFFu);
+        testService.ProcessDueQueue();
+
+        if (testService.QueueSize() != 0)
+        {
+            return Fail(name, "queue was not drained after processing a due bid");
+        }
+
+        // The auction must still be live (a bid does not consume it).
+        AuctionEntry* live = sAuctionMgr->GetAuctionsMapByHouseId(houseId)->GetAuction(auctionId);
+        if (!live)
+        {
+            return Fail(name, "auction was removed from the house after a bid (should stay live)");
+        }
+        if (live->bidder != bot.GetPlayer()->GetGUID())
+        {
+            return Fail(name, "bot did not become the high bidder");
+        }
+        if (live->bid != expectedBid)
+        {
+            return Fail(
+                name,
+                Acore::StringFormat("bid is {} (expected startbid+outbid = {})", live->bid, expectedBid));
+        }
+
+        CleanUpTestAuction(live, houseId);
+
+        return Pass(
+            name,
+            Acore::StringFormat(
+                "outbid player on item {} (auction {}): {} -> {}",
+                candidate->GetItemID(), auctionId, playerBid, expectedBid));
     }
 
     TestResult RunLiveLevelCapTest(

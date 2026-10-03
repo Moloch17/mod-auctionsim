@@ -9,7 +9,7 @@
 namespace AuctionPricing
 {
     // Fixed scan cadence -- previously user-configurable via AuctionSim.UpdateInterval.
-    constexpr uint32 kScanIntervalSeconds = 3600;
+    constexpr uint32 kScanIntervalSeconds = 1800;  // 30 minutes
 
     // How full to make a (class, quality) category this scan: a random point in
     // the observed [q1, median] band. Kept toward the lower end on purpose --
@@ -44,6 +44,17 @@ namespace AuctionPricing
     // to sample, so a small synthetic band is placed around marketPrice instead --
     // enough that repeat listings of the same item aren't priced identically.
     uint32 RollBuyoutPrice(uint32 low, uint32 marketPrice, uint32 high, uint32 quantity, uint32 sampleCount);
+
+    // Rolls a per-stack starting bid for a new listing: draws a "fraction of
+    // buyout" from a split-normal across [ratioLowBp, ratioHighBp] peaking at
+    // ratioTypicalBp (basis points; bp / 10000 = fraction), then returns
+    // clamp(round(buyout * ratio), 1, buyout). Thin samples (sampleCount <
+    // kMinSamplesForSpread) or a zero-width band get a small synthetic band
+    // around the typical ratio, mirroring RollBuyoutPrice. buyout is the full-
+    // stack value already rolled by RollBuyoutPrice.
+    uint32 RollStartBid(
+        uint32 buyout, uint32 ratioLowBp, uint32 ratioTypicalBp, uint32 ratioHighBp, uint32 sampleCount);
+
     uint32 RollAuctionDuration();
 
     // A scan pass's randomized willingness to buy above the mean price, mimicking
@@ -72,7 +83,15 @@ namespace AuctionPricing
         BuyTolerance const& tolerance,
         uint32 remainingScans);
 
-    // Rolls when (as an absolute time) a queued purchase should execute, capped at 45
+    // True if the bot should place a small outbid on this scan. Hard gate: never
+    // bids when nextBidPerUnit >= marketPrice (the buyout-derived typical price), so
+    // every outbid the bot places leaves the price still below market. Below that
+    // it is a single per-scan roll -- eager on a clear deal (next bid well under
+    // market), less eager on a slim margin -- NOT a cumulative lifetime chance. A
+    // miss just leaves the player in the lead until the next scan.
+    bool ShouldBidAtPrice(uint32 nextBidPerUnit, uint32 marketPrice);
+
+    // Rolls when (as an absolute time) a queued purchase should execute, capped at 20
     // minutes out so it always fires before the next scan reconsiders the auction.
     time_t RollBuyTime(time_t expireTime, time_t now);
 

@@ -24,6 +24,11 @@ namespace
     // Collects every bot-owned auction on `houseId` that `shouldRemove` accepts, then
     // deletes them in a second pass -- so the live house map is never mutated while it
     // is being iterated, and it is never copied. Returns the number removed.
+    //
+    // An auction that already carries a bid is left alone: this path just drops the
+    // row (no SendAuctionCancelledToBidderMail), so removing a bid-on auction would
+    // strand the bidder's escrowed gold. Those clear themselves when they expire or
+    // are won.
     template <typename Predicate>
     uint32 RemoveBotAuctionsIf(
         AuctionHouseId houseId,
@@ -37,7 +42,7 @@ namespace
         for (auto const& entry : house->GetAuctions())
         {
             AuctionEntry* auction = entry.second;
-            if (auction->owner == botGuid && shouldRemove(auction))
+            if (auction->owner == botGuid && auction->bid == 0 && shouldRemove(auction))
             {
                 toRemove.push_back(auction);
             }
@@ -98,6 +103,27 @@ bool AuctionSim::EnsureConfigFileExists()
     return true;
 }
 
+void AuctionSim::EvaluateConfigVersion()
+{
+    uint32 liveVer = sConfigMgr->GetOption<uint32>("AuctionSim.ConfigVersion", 0);
+    if (liveVer >= AUCTIONSIM_CONFIG_VERSION)
+    {
+        return;
+    }
+
+    _configOutdated = true;
+    _configHaveVer = liveVer;
+    _configNeedVer = AUCTIONSIM_CONFIG_VERSION;
+    LOG_WARN(
+        "module",
+        "AuctionSim: auctionsim.conf is out of date (config schema v{} < v{}); a current "
+        "auctionsim.conf.dist is in {}modules/ -- merge the new keys into auctionsim.conf. Missing keys "
+        "fall back to built-in defaults until you do.",
+        liveVer,
+        AUCTIONSIM_CONFIG_VERSION,
+        sConfigMgr->GetConfigPath());
+}
+
 void AuctionSim::OnStartup()
 {
     if (EnsureConfigFileExists())
@@ -107,6 +133,8 @@ void AuctionSim::OnStartup()
         sConfigMgr->Reload();
     }
 
+    EvaluateConfigVersion();
+
     // Load auctionsim.dat unconditionally: the addon shows/edits the listing table
     // whether or not the module is enabled.
     {
@@ -114,6 +142,16 @@ void AuctionSim::OnStartup()
         config = std::make_unique<ASConfig>(sConfigMgr->GetConfigPath() + "/modules/auctionsim.dat", datOk);
         if (!datOk)
         {
+            // A version-stamp mismatch (or a pre-stamp / missing file, found == 0) is
+            // an "out of date" condition the GM warning names explicitly; other load
+            // failures (corrupt rows) just get the generic error.
+            uint32 found = config ? config->GetFoundDataVersion() : 0;
+            if (found != AUCTIONSIM_DATA_VERSION)
+            {
+                _dataOutdated = true;
+                _dataHaveVer = found;
+                _dataNeedVer = AUCTIONSIM_DATA_VERSION;
+            }
             LOG_ERROR("module", "AuctionSim: auctionsim.dat failed to load");
             config.reset();
         }
@@ -239,10 +277,11 @@ void AuctionSim::ScanAuctions(AuctionHouseId _AuctionHouseId)
         auctionTable[proto->Class][proto->Quality]++;
         itemAuctionCount[auction->item_template]++;
 
-        if (auction->owner == botGuid)
-        {
-            continue;
-        }
+        // The bot must never BUY its own listings (that's just churn), but it does
+        // OUTBID a real player who has bid on one -- on a bot-heavy realm the bot's
+        // own auctions are most of the AH, and the outbid refund goes to the player
+        // while every bot-directed auction mail is swallowed, so there is no cheese.
+        bool const isBotOwned = (auction->owner == botGuid);
 
         ScannedItem const* scannedItem =
             config->FindScannedItem(_AuctionHouseId, proto->Class, proto->Quality, auction->item_template);
@@ -251,25 +290,43 @@ void AuctionSim::ScanAuctions(AuctionHouseId _AuctionHouseId)
             continue;
         }
 
-        uint32 pricePerItem = auction->buyout / auction->itemCount;
-
-        // Never buy grey items, and never pay more per unit than it would cost to buy
-        // the item straight from a vendor -- both are gold-cheese vectors. The vendor
-        // cap only applies when a vendor actually stocks the item (npc_vendor): a
-        // BuyPrice left on an item no vendor sells is stale DB data, not a real floor,
-        // so those pass the check (0 disables it). Grey auctions are still counted
-        // above so the listing side is unaffected.
-        uint32 vendorBuyPrice = (config->IsVendorSold(auction->item_template) && proto->BuyPrice > 0)
-            ? static_cast<uint32>(proto->BuyPrice)
-            : 0;
-        if (!AuctionPricing::IsBuyableQuality(proto->Quality) ||
-            !AuctionPricing::IsWithinVendorBuyPrice(pricePerItem, vendorBuyPrice))
+        // Never touch grey items -- vendor trash that only shows up on the AH as
+        // gold-cheese bait. (Grey auctions are still counted above, so the listing
+        // side is unaffected.)
+        if (!AuctionPricing::IsBuyableQuality(proto->Quality))
         {
             continue;
         }
 
-        buyingService->ConsiderForPurchase(
-            auction, pricePerItem, scannedItem->GetMarketPrice(), scannedItem->GetBuyCeiling());
+        // Buyout consideration -- only for real buyout auctions the bot doesn't own.
+        // A bid-only auction has buyout == 0, which would give pricePerItem == 0,
+        // pass "<= marketPrice", and get "bought" for nothing; guard against that.
+        if (!isBotOwned && auction->buyout > 0)
+        {
+            uint32 pricePerItem = auction->buyout / auction->itemCount;
+
+            // Never pay more per unit than it would cost to buy the item straight
+            // from a vendor. The cap only applies when a vendor actually stocks the
+            // item (npc_vendor): a BuyPrice left on an item no vendor sells is stale
+            // DB data, not a real floor (0 disables the check).
+            uint32 vendorBuyPrice = (config->IsVendorSold(auction->item_template) && proto->BuyPrice > 0)
+                ? static_cast<uint32>(proto->BuyPrice)
+                : 0;
+            if (AuctionPricing::IsWithinVendorBuyPrice(pricePerItem, vendorBuyPrice))
+            {
+                buyingService->ConsiderForPurchase(
+                    auction, pricePerItem, scannedItem->GetMarketPrice(), scannedItem->GetBuyCeiling());
+            }
+        }
+
+        // Bid consideration -- whenever a real player holds the high bid, on any
+        // auction including the bot's own. ConsiderForBid is a no-op if this auction
+        // was just queued for buyout above (shared dedupe set), so on a non-bot
+        // auction an acceptable buyout still wins over an outbid.
+        if (auction->bid > 0 && auction->bidder && auction->bidder != botGuid)
+        {
+            buyingService->ConsiderForBid(auction, scannedItem->GetMarketPrice());
+        }
     }
 
     buyingService->SortQueue();
@@ -288,6 +345,10 @@ std::vector<AuctionSimTests::TestResult> AuctionSim::RunTests()
     results.push_back(
         AuctionSimTests::RunLiveBuyingTest(*bot, *config, *listingService, AuctionHouseId::Alliance));
     results.push_back(AuctionSimTests::RunLiveBuyingTest(*bot, *config, *listingService, AuctionHouseId::Horde));
+
+    results.push_back(
+        AuctionSimTests::RunLiveBiddingTest(*bot, *config, *listingService, AuctionHouseId::Alliance));
+    results.push_back(AuctionSimTests::RunLiveBiddingTest(*bot, *config, *listingService, AuctionHouseId::Horde));
 
     results.push_back(
         AuctionSimTests::RunLiveLevelCapTest(*bot, *config, *listingService, AuctionHouseId::Alliance));

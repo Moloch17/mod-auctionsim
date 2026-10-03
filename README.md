@@ -4,10 +4,12 @@ AuctionSim populates and maintains your realm's auction house using price data s
 
 ## How it works
 
-Every hour (fixed, not configurable), AuctionSim scans both auction houses:
+Every 30 minutes (fixed, not configurable), AuctionSim scans both auction houses:
 
-- **Listing**: it keeps each item class/quality bucket about as full as a real auction house was observed to be in the scan data -- topping a bucket up only once it drops below the observed lower quartile, and choosing which items fill it weighted by how often each was really listed. A per-bucket multiplier in the config scales that target up or down. New listings get a random quantity and a buyout price rolled around the item's known mean price.
-- **Buying**: for each auction it doesn't already own, if the price is at or under the item's known mean, it's always queued to buy. If the price is above mean but still under the item's known maximum, it's queued with some probability (randomized each scan, to mimic natural demand variance between real players) rather than always or never. Queued purchases execute within 45 minutes of being queued.
+- **Listing**: it keeps each item class/quality bucket about as full as a real auction house was observed to be in the scan data -- topping a bucket up only once it drops below the observed lower quartile, and choosing which items fill it weighted by how often each was really listed. A per-bucket multiplier in the config scales that target up or down. New listings get a random quantity, a buyout price rolled around the item's known mean price, and a lower starting bid rolled from the starting-bid-to-buyout ratios seen in the real scan data.
+- **Buying**: for each auction it doesn't already own, if the price is at or under the item's known mean, it's always queued to buy. If the price is above mean but still under the item's known maximum, it's queued with some probability (randomized each scan, to mimic natural demand variance between real players) rather than always or never.
+- **Bidding**: on an auction a real player is already bidding on, it may queue a single small outbid (the game's minimum ~5% increment), but only while that bid still leaves the price below the item's market value, and it walks away if a rival pushes past that. It never removes an auction someone has bid on, so the bidder's gold is never stranded.
+- Queued buys and bids execute within 20 minutes of being queued, spread out over time. "Run Queue" in the addon (or `.auctionsim runqueue`) forces them all through immediately.
 - Optional `MaxRequiredLevel`/`MaxItemLevel` caps stop it from listing gear above your realm's level, for progression servers running below the max level.
 
 ## Installation
@@ -17,6 +19,7 @@ Every hour (fixed, not configurable), AuctionSim scans both auction houses:
    git clone https://github.com/Moloch17/mod-auctionsim.git
    ```
 2. Rebuild AzerothCore.
+3. Copy `interface_addon/ahsim` into your game's `Interface/AddOns` directory (see below). The module and addon ship as a pair: after updating one, update the other too, or a GM gets a version-mismatch notice.
 
 **Notes:**
 - If you've previously used ah-bot or ah-bot-plus, there's no conflict, but the two cannot run at the same time -- disable other auction house bot modules before enabling this one.
@@ -85,8 +88,10 @@ In the "Listing Multipliers" grid on the right:
 
 5. First run
 ------------
-- Click "Scan". The bot lists new auctions and queues items to buy. Queued buys
-  are spread over time, not done all at once.
+- Click "Scan". The bot lists new auctions (each with a buyout and a lower
+  starting bid) and queues actions: items to buy outright, plus small outbids on
+  auctions a real player is already bidding on. Queued actions are spread over
+  time, not done all at once - click "Run Queue" to force them all through now.
 - Note: Searching the auction house after running a scan while logged in as the
   bot character can take a little while for the auction db to update if there are
   a lot of new auctions.
@@ -95,13 +100,32 @@ In the "Listing Multipliers" grid on the right:
 
 Button reference
 ----------------
-Scan            List new auctions and queue buys now.
-Delete          Remove every auction the bot currently has listed.
-Show Queue      Show the buy queue size and when the next and last buy are due.
-Clean Over Cap  Remove bot auctions that are now above the level caps.
+Scan            List new auctions and queue buys and bids now.
+Delete          Remove every bot auction nobody has bid on (bid-on ones are left
+                to expire so the bidder's gold isn't stranded).
+Show Queue      Show the queue size and when the next and last action are due.
+Run Queue       Execute every queued buy and bid right now.
+Clean Over Cap  Remove bot auctions now above the level caps (again skipping
+                any that have a bid).
 Run Tests       Run the module's built-in self-tests; output goes to Results.
 Set Bot Char    Choose which character the bot uses (see step 2).
 Help            This window.
+
+
+Version notices
+--------------
+After a module update the Results box (and a GM's chat at login) may show:
+- "auctionsim.conf is out of date" - your config is missing keys the new module
+  version added. A current auctionsim.conf.dist is kept in etc/modules/; copy the
+  new keys into your auctionsim.conf. The module keeps running on defaults for the
+  missing keys until you do; it never edits auctionsim.conf itself.
+- "auctionsim.dat is out of date" - the data file's format changed. Pull the
+  latest changes and rebuild the module; the current auctionsim.dat ships with the
+  repo and is redeployed on build (you do not need the raw scans or
+  data/compile-data). The module has no market data until then.
+- "addon / module version mismatch" - the AHSim addon and the server module ship
+  as a pair; update whichever the message says is older.
+Each notice shows once per version, so a fixed problem stops repeating.
 
 
 Notes

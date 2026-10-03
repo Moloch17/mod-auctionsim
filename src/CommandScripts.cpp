@@ -47,6 +47,7 @@ public:
             {"test", HandleTestCommand, SEC_ADMINISTRATOR, Console::Yes},
             {"cleanovercap", HandleCleanOverCapCommand, SEC_ADMINISTRATOR, Console::Yes},
             {"showqueue", HandleShowQueueCommand, SEC_ADMINISTRATOR, Console::Yes},
+            {"runqueue", HandleRunQueueCommand, SEC_ADMINISTRATOR, Console::Yes},
         };
         static ChatCommandTable commandTable = {
             {"auctionsim", auctionSimSubCommandTable},
@@ -152,6 +153,22 @@ public:
                   status.size,
                   status.nextBuyInSeconds,
                   status.lastBuyInSeconds);
+        LOG_INFO("module", "{}", message);
+        handler->SendSysMessage(message);
+        return true;
+    }
+
+    static bool HandleRunQueueCommand(ChatHandler* handler)
+    {
+        if (!RequireEnabled(handler))
+        {
+            return true;
+        }
+
+        size_t ran = 0;
+        long long elapsed = TimedMs([&] { ran = AuctionSim::instance()->RunQueue(); });
+
+        std::string message = fmt::format("Ran {} queued action(s) in {} ms", ran, elapsed);
         LOG_INFO("module", "{}", message);
         handler->SendSysMessage(message);
         return true;

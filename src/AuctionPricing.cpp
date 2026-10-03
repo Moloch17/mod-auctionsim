@@ -37,14 +37,48 @@ namespace
     constexpr float kNearTierBuyChance = 0.50f;  // cumulative, over the auction's full remaining lifetime
     constexpr float kFarTierBuyChance = 0.10f;   // cumulative, over the auction's full remaining lifetime
 
+    // Outbidding is a per-scan roll, NOT a cumulative lifetime chance amortised over
+    // remaining scans: a competing player checks the AH periodically and jumps on a
+    // deal, they don't have a fixed conversion target. The bot only ever considers a
+    // next bid that is already below market value (hard gate in ShouldBidAtPrice), so
+    // these are just "how eager", split by how good the remaining margin is. Missing
+    // a roll simply means the player keeps the lead into the next scan.
+    constexpr float kBidDealBoundary = 0.85f;      // next bid <= 85% of market == a clear deal
+    constexpr float kBidDealChancePerScan = 0.60f;
+    constexpr float kBidThinChancePerScan = 0.30f;  // next bid is 85-100% of market -- slimmer margin
+
     // A queued purchase never waits longer than this before executing.
-    constexpr time_t kMaxQueueDelaySeconds = 2700;  // 45 minutes
+    constexpr time_t kMaxQueueDelaySeconds = 1200;  // 20 minutes
 
     // Converts a target cumulative chance (over remainingScans opportunities) into the
     // equivalent independent per-scan chance: 1 - (1 - target)^(1/remainingScans).
     float AmortizeOverScans(float targetCumulativeChance, uint32 remainingScans)
     {
         return 1.0f - std::pow(1.0f - targetCumulativeChance, 1.0f / static_cast<float>(remainingScans));
+    }
+
+    // One draw from an asymmetric (split-)normal across [lo, hi] peaking at `peak`.
+    // Each side's sigma = (distance to that bound) / sigmaDivisor, floored at
+    // sigmaFloor. Draws outside [lo, hi] are re-rolled rather than clamped so the
+    // shape isn't distorted (with the bounds ~sigmaDivisor sigma out a redraw is
+    // rare); after kBuyoutResampleLimit tries it falls back to a clamp. Shared by
+    // RollBuyoutPrice (copper space, sigmaFloor 1) and RollStartBid (basis-point
+    // space, where 1 is negligible).
+    float SampleSplitNormal(float lo, float peak, float hi, float sigmaDivisor, float sigmaFloor)
+    {
+        float sigmaLow = std::max((peak - lo) / sigmaDivisor, sigmaFloor);
+        float sigmaHigh = std::max((hi - peak) / sigmaDivisor, sigmaFloor);
+        std::normal_distribution<float> standardNormal(0.0f, 1.0f);
+
+        float value;
+        uint32 attempts = 0;
+        do
+        {
+            float z = standardNormal(RandomEngine::Instance());
+            value = peak + z * (z < 0.0f ? sigmaLow : sigmaHigh);
+        } while ((value < lo || value > hi) && ++attempts < kBuyoutResampleLimit);
+
+        return std::clamp(value, lo, hi);
     }
 }
 
@@ -156,25 +190,50 @@ namespace AuctionPricing
 
         // Split-normal (asymmetric bell) across [low, high], peaking at marketPrice.
         // Each side gets its own standard deviation so an off-centre market price
-        // still yields a natural curve. Draws outside the band are re-rolled rather
-        // than clamped so the shape isn't distorted; with the bounds ~3 sigma out a
-        // redraw is rare.
-        float marketF = static_cast<float>(marketPrice);
-        float sigmaLow = std::max((marketF - static_cast<float>(low)) / kBuyoutSigmaDivisor, 1.0f);
-        float sigmaHigh = std::max((static_cast<float>(high) - marketF) / kBuyoutSigmaDivisor, 1.0f);
-        std::normal_distribution<float> standardNormal(0.0f, 1.0f);
-
-        float price;
-        uint32 attempts = 0;
-        do
-        {
-            float z = standardNormal(RandomEngine::Instance());
-            price = marketF + z * (z < 0.0f ? sigmaLow : sigmaHigh);
-        } while ((price < low || price > high) && ++attempts < kBuyoutResampleLimit);
-
-        price = std::clamp(price, static_cast<float>(low), static_cast<float>(high));
+        // still yields a natural curve. The 1.0f sigma floor reproduces the old
+        // inline std::max(..., 1.0f) exactly.
+        float price = SampleSplitNormal(
+            static_cast<float>(low), static_cast<float>(marketPrice), static_cast<float>(high),
+            kBuyoutSigmaDivisor, 1.0f);
 
         return quantity * std::max(1u, static_cast<uint32>(price));
+    }
+
+    uint32 RollStartBid(
+        uint32 buyout, uint32 ratioLowBp, uint32 ratioTypicalBp, uint32 ratioHighBp, uint32 sampleCount)
+    {
+        if (buyout <= 1)
+        {
+            return std::max(1u, buyout);
+        }
+        if (ratioTypicalBp == 0)
+        {
+            ratioTypicalBp = 10000;  // no bid data -> startbid == buyout
+        }
+
+        // Thin sample / no real spread: small synthetic band around the typical
+        // ratio, mirroring RollBuyoutPrice's thin-sample fallback.
+        if (sampleCount < kMinSamplesForSpread || ratioHighBp <= ratioLowBp)
+        {
+            ratioLowBp = static_cast<uint32>(static_cast<float>(ratioTypicalBp) * (1.0f - kThinSampleJitter));
+            ratioHighBp = static_cast<uint32>(static_cast<float>(ratioTypicalBp) * (1.0f + kThinSampleJitter));
+        }
+
+        ratioLowBp = std::min(ratioLowBp, ratioTypicalBp);
+        ratioHighBp = std::max(ratioHighBp, ratioTypicalBp);
+
+        // Basis-point space throughout: the 1.0f sigma floor is negligible here, and
+        // it keeps one unit convention from the on-disk stat to the rolled fraction.
+        float ratio = (ratioHighBp <= ratioLowBp)
+            ? static_cast<float>(ratioTypicalBp) / 10000.0f
+            : SampleSplitNormal(
+                  static_cast<float>(ratioLowBp), static_cast<float>(ratioTypicalBp),
+                  static_cast<float>(ratioHighBp), kBuyoutSigmaDivisor, 1.0f) /
+                  10000.0f;
+        ratio = std::clamp(ratio, 0.0f, 1.0f);
+
+        return std::clamp<uint32>(
+            static_cast<uint32>(std::lround(static_cast<float>(buyout) * ratio)), 1u, buyout);
     }
 
     uint32 RollAuctionDuration() { return urand(kMinDurationSeconds, kMaxDurationSeconds); }
@@ -211,6 +270,23 @@ namespace AuctionPricing
         float targetChance = percentPosition <= tolerance.boundaryPercent ? kNearTierBuyChance : kFarTierBuyChance;
 
         return roll_chance_f(AmortizeOverScans(targetChance, remainingScans) * 100.0f);
+    }
+
+    bool ShouldBidAtPrice(uint32 nextBidPerUnit, uint32 marketPrice)
+    {
+        // Hard gate: never outbid at or above the item's buyout-derived typical price.
+        if (marketPrice == 0 || nextBidPerUnit >= marketPrice)
+        {
+            return false;
+        }
+
+        // A single per-scan roll (not amortised): eager on a clear deal, less so when
+        // the remaining margin to market is slim. A miss just leaves the player in the
+        // lead until the next scan -- "players can get lucky".
+        float position = static_cast<float>(nextBidPerUnit) / static_cast<float>(marketPrice);
+        float chance = position <= kBidDealBoundary ? kBidDealChancePerScan : kBidThinChancePerScan;
+
+        return roll_chance_f(chance * 100.0f);
     }
 
     time_t RollBuyTime(time_t expireTime, time_t now)

@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include "ASParse.h"
+#include "AuctionSimVersion.h"
 #include "Config.h"
 #include "DatabaseEnv.h"
 #include "ObjectMgr.h"
@@ -91,7 +92,31 @@ ASConfig::ASConfig(std::string const& filepath, bool& outLoaded)
         return;
     }
 
-    // Line 1 is "N M": N item rows, preceded by M category-depth rows.
+    // Line 1 is an optional "AUCTIONSIM_DAT <v>" stamp; if present, the real "N M"
+    // header follows on line 2. A file whose stamp differs from the version this
+    // build expects is refused outright -- the row schema will not match.
+    bool stampConsumed = false;
+    this->foundDataVersion = ParseDataVersionLine(line, stampConsumed);
+    if (stampConsumed && !std::getline(stream, line))
+    {
+        LOG_ERROR("module", "AuctionSim: {} has a version stamp but no header line", filepath);
+        outLoaded = false;
+        return;
+    }
+    if (this->foundDataVersion != AUCTIONSIM_DATA_VERSION)
+    {
+        LOG_ERROR(
+            "module",
+            "AuctionSim: {} is data-format v{}, this build needs v{}; refusing to load -- pull the latest "
+            "module changes and rebuild so the shipped auctionsim.dat is redeployed",
+            filepath,
+            this->foundDataVersion,
+            AUCTIONSIM_DATA_VERSION);
+        outLoaded = false;
+        return;
+    }
+
+    // Line 1 (after any stamp) is "N M": N item rows, preceded by M category-depth rows.
     size_t declaredItemRows = 0;
     size_t categoryRows = 0;
     if (!ParseHeaderLine(line, declaredItemRows, categoryRows))
@@ -155,6 +180,20 @@ bool ASConfig::ParseHeaderLine(std::string const& line, size_t& outItemRows, siz
     std::istringstream header(line);
     header >> outItemRows >> outCategoryRows;
     return static_cast<bool>(header) && outItemRows > 0;
+}
+
+uint32 ASConfig::ParseDataVersionLine(std::string const& line, bool& consumed)
+{
+    std::istringstream in(line);
+    std::string tag;
+    uint32 version = 0;
+    if ((in >> tag) && tag == "AUCTIONSIM_DAT" && (in >> version))
+    {
+        consumed = true;
+        return version;
+    }
+    consumed = false;
+    return 0;  // legacy unversioned file -- `line` is still the "N M" header
 }
 
 // One category-depth row: faction:class:quality:snapshotCount followed by a

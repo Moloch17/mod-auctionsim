@@ -26,6 +26,17 @@ public:
 
     ASConfig(std::string const& filepath, bool& outLoaded);
 
+    // Data-format version read from the first line of auctionsim.dat ("AUCTIONSIM_DAT
+    // <v>"). 0 means the file had no stamp (a pre-versioning file) or couldn't be
+    // opened. Set before any early return so AuctionSim can report have-vs-need even
+    // when the load is refused.
+    uint32 GetFoundDataVersion() const { return foundDataVersion; }
+
+    // Peels an optional "AUCTIONSIM_DAT <v>" stamp off line 1 of the data file.
+    // Returns the version (0 if the line is not a stamp) and sets `consumed` true
+    // when the line WAS the stamp (so the caller advances to the real header line).
+    static uint32 ParseDataVersionLine(std::string const& line, bool& consumed);
+
     // Level caps for newly-listed items; 0 disables the respective check. Read once
     // from AuctionSim.MaxRequiredLevel / AuctionSim.MaxItemLevel at construction.
     uint32 maxRequiredLevel = 0;
@@ -111,4 +122,6 @@ private:
     void LoadVendorItems();
 
     void UnpackQualityString(std::string_view qualityString, int itemClass);
+
+    uint32 foundDataVersion = 0;
 };

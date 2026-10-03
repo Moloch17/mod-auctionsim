@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <memory>
 #include <vector>
 #include "ASConfig.h"
@@ -6,6 +7,7 @@
 #include "AuctionHouseMgr.h"
 #include "AuctionListingService.h"
 #include "AuctionSimTests.h"
+#include "AuctionSimVersion.h"
 #include "Bot.h"
 #include "Player.h"
 #include "ScriptMgr.h"
@@ -26,6 +28,10 @@ public:
     std::vector<AuctionSimTests::TestResult> RunTests();
     std::vector<AuctionBuyingService::QueuedPurchase> const& GetBuyQueue() const { return buyingService->GetQueue(); }
 
+    // Executes every queued buy/bid immediately and returns how many ran. Backs the
+    // ".auctionsim runqueue" command and the addon's "Run Queue" button.
+    size_t RunQueue() { return buyingService ? buyingService->DrainQueue() : 0; }
+
     // Buy-queue summary for the ".auctionsim showqueue" command and the addon's
     // Show Queue button, so the "soonest-due at the back" ordering lives in one place.
     struct BuyQueueStatus
@@ -40,6 +46,19 @@ public:
     // regardless of isEnabled, so GetConfig() is null only on a dat parse failure.
     Player* GetBotPlayer() const { return bot ? bot->GetPlayer().get() : nullptr; }
     ASConfig* GetConfig() const { return config.get(); }
+
+    // --- Versioning (evaluated once in OnStartup) ---------------------------------
+    // The GM's auctionsim.conf carries an AuctionSim.ConfigVersion older than this
+    // build expects: the module still runs (missing keys fall back to defaults) but
+    // warns the GM. Data-outdated means auctionsim.dat's stamp didn't match, in
+    // which case the module also refuses to run (no market data).
+    static constexpr char const* ModuleVersion() { return AUCTIONSIM_VERSION; }
+    bool IsConfigOutdated() const { return _configOutdated; }
+    uint32 ConfigHaveVersion() const { return _configHaveVer; }
+    uint32 ConfigNeedVersion() const { return _configNeedVer; }
+    bool IsDataOutdated() const { return _dataOutdated; }
+    uint32 DataHaveVersion() const { return _dataHaveVer; }
+    uint32 DataNeedVersion() const { return _dataNeedVer; }
 
     // Low GUID of the bot's character, or 0 when no bot is running. Cheap accessor
     // for the mail hook -- reads the in-memory id, never re-parses config.
@@ -60,6 +79,10 @@ private:
     // (ConfigMgr then needs a reload to pick up its values).
     bool EnsureConfigFileExists();
 
+    // Reads AuctionSim.ConfigVersion from the live auctionsim.conf and sets the
+    // _config* fields if it is behind AUCTIONSIM_CONFIG_VERSION.
+    void EvaluateConfigVersion();
+
     static AuctionSim* _instance;
     std::unique_ptr<Bot> bot;
     // Old bots kept alive rather than destroyed: the headless Player is only safe to
@@ -69,6 +92,13 @@ private:
     std::unique_ptr<AuctionListingService> listingService;
     std::unique_ptr<AuctionBuyingService> buyingService;
     uint32 scanTimer = 0;
+
+    bool _configOutdated = false;
+    uint32 _configHaveVer = 0;
+    uint32 _configNeedVer = 0;
+    bool _dataOutdated = false;
+    uint32 _dataHaveVer = 0;
+    uint32 _dataNeedVer = 0;
 };
 class AuctionSimMailManager : public MailScript
 {

@@ -1,3 +1,11 @@
+# Config schema version -- DO NOT EDIT.
+# The module compares this to the version it was built for and warns a GM at login
+# (and in the addon window) if your auctionsim.conf is behind after a module
+# update. When it warns, copy the new keys from the refreshed auctionsim.conf.dist
+# (kept current in etc/modules/) into your auctionsim.conf. The module never edits
+# auctionsim.conf itself; missing keys fall back to built-in defaults meanwhile.
+AuctionSim.ConfigVersion = 1
+
 # Enable or disable the entire module
 AuctionSim.Enabled = 0
 

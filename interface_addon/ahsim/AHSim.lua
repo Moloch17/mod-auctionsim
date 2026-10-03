@@ -12,6 +12,11 @@ AHSim.authorized = false
 AHSim.handlers = {}
 AHSim.playerName = nil  -- cached at PLAYER_LOGIN; the self-whisper target
 
+-- Released as a pair with the server module; sent in the WHOAMI handshake so the
+-- module can warn (in the output window) on a version mismatch. Read from the .toc
+-- so there is one place to bump; the literal is a fallback for odd clients.
+AHSim.VERSION = (GetAddOnMetadata and GetAddOnMetadata("ahsim", "Version")) or "1.4.0"
+
 -- The one place message-type strings live on the client. Values equal keys and
 -- must match AuctionSimAddonBridge.cpp's Msg namespace.
 AHSim.OP = {
@@ -25,6 +30,7 @@ AHSim.OP = {
     TEST = "TEST",
     CLEANOVERCAP = "CLEANOVERCAP",
     SHOWQUEUE = "SHOWQUEUE",
+    RUNQUEUE = "RUNQUEUE",
     SETBOTCHAR = "SETBOTCHAR",
     -- server -> client
     ERROR = "ERROR",
@@ -35,8 +41,10 @@ AHSim.OP = {
     TESTRESULT = "TESTRESULT",
     TESTDONE = "TESTDONE",
     QUEUEINFO = "QUEUEINFO",
+    RUNQUEUERESULT = "RUNQUEUERESULT",
     CLEANRESULT = "CLEANRESULT",
     SETBOTCHARRESULT = "SETBOTCHARRESULT",
+    NOTICE = "NOTICE",
 }
 
 function AHSim:RegisterHandler(msgType, fn)
@@ -85,8 +93,9 @@ eventFrame:RegisterEvent("CHAT_MSG_ADDON")
 eventFrame:SetScript("OnEvent", function(self, event, ...)
     if event == "PLAYER_LOGIN" then
         AHSim.playerName = UnitName("player")
-        -- server only answers WHOAMI for GMs; the reply gates window creation
-        AHSim:Send(AHSim.OP.WHOAMI)
+        -- server only answers WHOAMI for GMs; the reply gates window creation.
+        -- Our version rides along so the module can flag a mismatch.
+        AHSim:Send(AHSim.OP.WHOAMI, AHSim.VERSION)
     elseif event == "CHAT_MSG_ADDON" then
         local prefix, message = ...
         if prefix == AHSim.PREFIX then

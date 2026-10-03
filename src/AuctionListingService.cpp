@@ -181,6 +181,11 @@ AuctionEntry* AuctionListingService::ListOneItem(
         scan.GetTypicalStackSize(), scan.GetStackLow(), scan.GetStackHigh(), proto->GetMaxStackSize());
     uint32 buyout = AuctionPricing::RollBuyoutPrice(
         scan.GetListLow(), scan.GetMarketPrice(), scan.GetListHigh(), quantity, scan.GetSampleCount());
+    // Realistic starting bid: a fraction of this listing's buyout, rolled from the
+    // observed MINBID/BUYOUT distribution for the item (basis points).
+    uint32 startbid = AuctionPricing::RollStartBid(
+        buyout, scan.GetBidRatioLowBp(), scan.GetBidRatioTypicalBp(), scan.GetBidRatioHighBp(),
+        scan.GetBidRatioSampleCount());
 
     // The item only ever lives in the auction house, never in the bot's inventory or
     // item-update queue -- otherwise Player::_SaveInventory trips over it (bag 255 /
@@ -202,7 +207,7 @@ AuctionEntry* AuctionListingService::ListOneItem(
     auction->item_template = item->GetEntry();
     auction->itemCount = quantity;
     auction->owner = _bot.GetPlayerRef().GetGUID();
-    auction->startbid = buyout;
+    auction->startbid = startbid;
     auction->buyout = buyout;
     auction->bid = 0;
     auction->deposit = 0;

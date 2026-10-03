@@ -3,7 +3,8 @@
 // Parses Auctioneer Auc-ScanData.lua SavedVariables files, decodes their
 // "ropes" fields (see explanation below), and emits auctionsim.dat.
 //
-// LINE 1:  "<itemRowCount> <categoryRowCount>"
+// LINE 1:  "AUCTIONSIM_DAT <schemaVersion>"  (module refuses a mismatched stamp)
+// LINE 2:  "<itemRowCount> <categoryRowCount>"
 //
 // Then <categoryRowCount> CATEGORY ROWS, one per (faction, item class,
 // quality) that appeared in the scans -- 16 fields:
@@ -16,11 +17,11 @@
 // uses to decide how full each category should be.
 //
 // Then <itemRowCount> ITEM ROWS, one per (faction, itemID, suffix), all a
-// FIXED 41 fields -- no compression:
+// FIXED 54 fields -- no compression:
 //
 //   faction:itemID:suffix:priceSampleCount:
 //     <12 price stats> : <12 stack-size stats> : <12 listing-count stats> :
-//     listingSnapshotCount
+//     <12 bid-ratio stats> : bidRatioSampleCount : listingSnapshotCount
 //
 // Each 12-stat block is: raw low/high/mean/median/mode, then q1/q3, then the
 // 5 outlier-adjusted (Tukey 1.5x-IQR trimmed) central-tendency values. See
@@ -28,14 +29,21 @@
 // free way to drop one-off troll / fat-finger listings, and real AH data is
 // right-skewed so a plain mean is a poor "typical" signal.
 //
-//   price*   per-unit buyout price. priceSampleCount = # buyout listings.
-//   stack*   listing stack size (COUNT). Same record set as price (so its
-//            sampleCount == priceSampleCount). Reads all-1 for equippable
-//            gear; written out anyway to keep every row the same width.
-//   listing* how many auctions of this item exist per snapshot, counting
-//            EVERY auction (buyout or bid-only). Its sample basis is
-//            snapshots, not records, so it carries its own trailing
-//            listingSnapshotCount.
+//   price*    per-unit buyout price. priceSampleCount = # buyout listings.
+//   stack*    listing stack size (COUNT). Same record set as price (so its
+//             sampleCount == priceSampleCount). Reads all-1 for equippable
+//             gear; written out anyway to keep every row the same width.
+//   listing*  how many auctions of this item exist per snapshot, counting
+//             EVERY auction (buyout or bid-only). Its sample basis is
+//             snapshots, not records, so it carries its own trailing
+//             listingSnapshotCount.
+//   bidRatio* starting bid as a fraction of buyout (MINBID / BUYOUT), stored
+//             in BASIS POINTS (ratio * 10000) so the integer computeStats
+//             pipeline is reused unchanged. Only listings that have BOTH a
+//             buyout and a min-bid contribute; bidRatioSampleCount is that
+//             count. The module divides by 10000 and rolls a starting bid as
+//             ratio * buyout. Falls back to 10000 (ratio 1.0, i.e. startbid
+//             == buyout) for items with no observed min-bid data.
 //
 // -----------------------------------------------------------------------
 // Background: "ropes" is an array of Lua *source code* strings. Each one
@@ -111,12 +119,18 @@
 #include <unordered_map>
 #include <vector>
 #include <cmath>
+#include "../src/AuctionSimVersion.h"  // AUCTIONSIM_DATA_VERSION (pure #defines, no deps)
 
 // Every price bucketed for the output file is a per-unit BUYOUT price:
 // (listing's BUYOUT field) / (stack COUNT). Listings with no buyout set
 // (buyout == 0, i.e. bid-only auctions) are skipped entirely, since there
 // is no buyout price to normalize for them.
 static constexpr bool SKIP_NO_BUYOUT = true;
+
+// Floor for the per-listing starting-bid ratio (MINBID / BUYOUT). Guards against
+// a stray near-zero min-bid dragging the bucket's low end to nothing; real
+// sellers never open an auction at a hundredth of the buyout.
+static constexpr double kMinBidRatio = 0.01;
 
 // -----------------------------------------------------------------------
 // Reads a Lua double-quoted string literal starting at text[i] (which
@@ -431,6 +445,7 @@ using NumericBuckets =
 using PriceBuckets = NumericBuckets; // alias for readability at call sites
 using StackBuckets = NumericBuckets;
 using ListingCountBuckets = NumericBuckets;
+using BidRatioBuckets = NumericBuckets; // MINBID/BUYOUT per listing, in basis points
 
 // Composite key: one bucket per (faction, item class, quality). Holds one
 // sample per scan snapshot = the total number of auctions in that category
@@ -495,6 +510,7 @@ static bool accumulateFile(const std::string& path,
                             PriceBuckets& priceBuckets,
                             StackBuckets& stackBuckets,
                             ListingCountBuckets& listingCountBuckets,
+                            BidRatioBuckets& bidRatioBuckets,
                             CategoryCountBuckets& categoryCountBuckets,
                             size_t& recordCount,
                             SkipCounts& skips,
@@ -584,6 +600,18 @@ static bool accumulateFile(const std::string& path,
             // so both distributions share an identical sampleCount and
             // stay directly comparable row to row.
             stackBuckets[key].push_back(static_cast<double>(count));
+
+            // Starting-bid ratio: MINBID / BUYOUT for this same listing. Both
+            // are per-stack totals, so the ratio is stack-invariant (no
+            // /count). Stored in basis points (ratio * 10000) so computeStats'
+            // integer pipeline is reused as-is. Listings with no MINBID set
+            // simply don't contribute -- bidRatioSampleCount tracks that.
+            double minbid = static_cast<double>(toLong(fields[14], 0));
+            if (minbid > 0.0) {
+                double ratio = std::clamp(minbid / buyout, kMinBidRatio, 1.0);
+                bidRatioBuckets[key].push_back(ratio * 10000.0);
+            }
+
             ++recordCount;
         }
     }
@@ -604,6 +632,7 @@ struct WorkerResult {
     PriceBuckets priceBuckets;
     StackBuckets stackBuckets;
     ListingCountBuckets listingCountBuckets;
+    BidRatioBuckets bidRatioBuckets;
     CategoryCountBuckets categoryCountBuckets;
     size_t recordCount = 0;
     SkipCounts skips;
@@ -620,7 +649,8 @@ static void workerThreadMain(const std::vector<std::string>& paths,
             std::cerr << "Scanning " << path << "...\n";
         }
         if (accumulateFile(path, result.priceBuckets, result.stackBuckets,
-                            result.listingCountBuckets, result.categoryCountBuckets,
+                            result.listingCountBuckets, result.bidRatioBuckets,
+                            result.categoryCountBuckets,
                             result.recordCount, result.skips,
                             result.unknownFactionCount)) {
             ++result.filesProcessed;
@@ -707,6 +737,7 @@ int main() {
     PriceBuckets priceBuckets;
     StackBuckets stackBuckets;
     ListingCountBuckets listingCountBuckets;
+    BidRatioBuckets bidRatioBuckets;
     CategoryCountBuckets categoryCountBuckets;
     size_t recordCount = 0, unknownFactionCount = 0;
     size_t filesProcessed = 0, filesSkipped = 0;
@@ -716,6 +747,7 @@ int main() {
         mergeBuckets(priceBuckets, std::move(result.priceBuckets));
         mergeBuckets(stackBuckets, std::move(result.stackBuckets));
         mergeBuckets(listingCountBuckets, std::move(result.listingCountBuckets));
+        mergeBuckets(bidRatioBuckets, std::move(result.bidRatioBuckets));
         mergeBuckets(categoryCountBuckets, std::move(result.categoryCountBuckets));
         recordCount         += result.recordCount;
         skips.malformed      += result.skips.malformed;
@@ -754,10 +786,10 @@ int main() {
         categoryLines.push_back(line.str());
     }
 
-    // Item rows -- fixed width, always 41 fields:
+    // Item rows -- fixed width, always 54 fields:
     //   faction:itemID:enchant:priceSampleCount
     //   + 12 price stats + 12 stack-size stats + 12 listing-count stats
-    //   + listingSnapshotCount
+    //   + 12 bid-ratio stats + bidRatioSampleCount + listingSnapshotCount
     std::vector<std::string> lines;
     lines.reserve(priceBuckets.size());
 
@@ -767,6 +799,8 @@ int main() {
     size_t   maxSampleCount = 0;
 
     static const std::vector<double> onesFallback = {1.0};
+    // No observed min-bid data -> ratio 1.0 (startbid == buyout, the old behaviour).
+    static const std::vector<double> bidRatioFallback = {10000.0};
 
     for (auto& bucket : priceBuckets) {
         int32_t  factionId = bucket.first.factionId;
@@ -789,13 +823,20 @@ int main() {
             (listIt != listingCountBuckets.end()) ? listIt->second : onesFallback;
         Stats listStats = computeStats(listCopy);
 
+        auto bidIt = bidRatioBuckets.find(bucket.first);
+        std::vector<double> bidCopy =
+            (bidIt != bidRatioBuckets.end()) ? bidIt->second : bidRatioFallback;
+        Stats bidStats = computeStats(bidCopy);
+
         std::ostringstream line;
         line << factionId << ':' << itemId << ':' << enchant << ':'
              << priceStats.sampleCount << ':';
         emitStats(line, priceStats);
         line << ':'; emitStats(line, stackStats);
         line << ':'; emitStats(line, listStats);
-        line << ':' << listStats.sampleCount;
+        line << ':'; emitStats(line, bidStats);
+        line << ':' << bidStats.sampleCount;   // bidRatioSampleCount  (2nd-to-last)
+        line << ':' << listStats.sampleCount;  // listingSnapshotCount (stays last)
 
         lines.push_back(line.str());
     }
@@ -806,8 +847,10 @@ int main() {
         return 1;
     }
 
-    // Row 1: "<item row count> <category row count>". Category rows follow,
-    // then the item rows.
+    // Line 1: "AUCTIONSIM_DAT <schema version>" -- the module refuses a file whose
+    // stamp doesn't match the version it was built for. Line 2: "<item row count>
+    // <category row count>". Category rows follow, then the item rows.
+    out << "AUCTIONSIM_DAT " << AUCTIONSIM_DATA_VERSION << '\n';
     out << lines.size() << ' ' << categoryLines.size() << '\n';
     for (const auto& line : categoryLines) out << line << '\n';
     for (const auto& line : lines) out << line << '\n';

@@ -61,8 +61,10 @@ In the "Listing Multipliers" grid on the right:
 
 5. First run
 ------------
-- Click "Scan". The bot lists new auctions and queues items to buy. Queued buys
-  are spread over time, not done all at once.
+- Click "Scan". The bot lists new auctions (each with a buyout and a lower
+  starting bid) and queues actions: items to buy outright, plus small outbids on
+  auctions a real player is already bidding on. Queued actions are spread over
+  time, not done all at once - click "Run Queue" to force them all through now.
 - Note: Searching the auction house after running a scan while logged in as the
   bot character can take a little while for the auction db to update if there are
   a lot of new auctions.
@@ -71,13 +73,32 @@ In the "Listing Multipliers" grid on the right:
 
 Button reference
 ----------------
-Scan            List new auctions and queue buys now.
-Delete          Remove every auction the bot currently has listed.
-Show Queue      Show the buy queue size and when the next and last buy are due.
-Clean Over Cap  Remove bot auctions that are now above the level caps.
+Scan            List new auctions and queue buys and bids now.
+Delete          Remove every bot auction nobody has bid on (bid-on ones are left
+                to expire so the bidder's gold isn't stranded).
+Show Queue      Show the queue size and when the next and last action are due.
+Run Queue       Execute every queued buy and bid right now.
+Clean Over Cap  Remove bot auctions now above the level caps (again skipping
+                any that have a bid).
 Run Tests       Run the module's built-in self-tests; output goes to Results.
 Set Bot Char    Choose which character the bot uses (see step 2).
 Help            This window.
+
+
+Version notices
+--------------
+After a module update the Results box (and a GM's chat at login) may show:
+- "auctionsim.conf is out of date" - your config is missing keys the new module
+  version added. A current auctionsim.conf.dist is kept in etc/modules/; copy the
+  new keys into your auctionsim.conf. The module keeps running on defaults for the
+  missing keys until you do; it never edits auctionsim.conf itself.
+- "auctionsim.dat is out of date" - the data file's format changed. Pull the
+  latest changes and rebuild the module; the current auctionsim.dat ships with the
+  repo and is redeployed on build (you do not need the raw scans or
+  data/compile-data). The module has no market data until then.
+- "addon / module version mismatch" - the AHSim addon and the server module ship
+  as a pair; update whichever the message says is older.
+Each notice shows once per version, so a fixed problem stops repeating.
 
 
 Notes

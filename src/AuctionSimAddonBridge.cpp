@@ -9,7 +9,9 @@
 #include "ASParse.h"
 #include "AuctionHouseMgr.h"
 #include "AuctionSim.h"
+#include "AuctionSimVersion.h"
 #include "CharacterCache.h"
+#include "Chat.h"
 #include "Common.h"
 #include "Config.h"
 #include "GameTime.h"
@@ -43,6 +45,7 @@ namespace
         constexpr std::string_view Test = "TEST";
         constexpr std::string_view CleanOverCap = "CLEANOVERCAP";
         constexpr std::string_view ShowQueue = "SHOWQUEUE";
+        constexpr std::string_view RunQueue = "RUNQUEUE";
         constexpr std::string_view SetBotChar = "SETBOTCHAR";
 
         // Outbound: server -> client message types.
@@ -54,8 +57,13 @@ namespace
         constexpr std::string_view TestResult = "TESTRESULT";
         constexpr std::string_view TestDone = "TESTDONE";
         constexpr std::string_view QueueInfo = "QUEUEINFO";
+        constexpr std::string_view RunQueueResult = "RUNQUEUERESULT";
         constexpr std::string_view CleanResult = "CLEANRESULT";
         constexpr std::string_view SetBotCharResult = "SETBOTCHARRESULT";
+        // NOTICE\t<kind>\t<a>\t<b>\t<moduleVersion> -- one-shot warnings shown once
+        // per version in the addon's Results log. kind: "config" (a<b = have<need),
+        // "data" (a vs b = have vs need), "version" (a = addon ver or "?", b = module ver).
+        constexpr std::string_view Notice = "NOTICE";
     }
 
     // SETCONFIG keys awaiting a SAVECONFIG. One global set: worldserver hooks are
@@ -371,6 +379,21 @@ namespace
                 status.lastBuyInSeconds));
     }
 
+    void HandleRunQueue(Player* target, std::vector<std::string_view> const&)
+    {
+        if (!RequireEnabled(target))
+        {
+            return;
+        }
+
+        auto start = std::chrono::high_resolution_clock::now();
+        size_t ran = AuctionSim::instance()->RunQueue();
+        auto end = std::chrono::high_resolution_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+
+        SendMessage(target, Acore::StringFormat("{}\t{}\t{}", Msg::RunQueueResult, elapsed, ran));
+    }
+
     // Resolve a character name to its guid + account id (only the server can) and
     // write both to auctionsim.conf. If the module is enabled, restart the bot on it.
     void HandleSetBotChar(Player* target, std::vector<std::string_view> const& tokens)
@@ -444,10 +467,52 @@ namespace
                 "{}\tok\t{}\t{}\t{}\t{}", Msg::SetBotCharResult, name, characterId, accountId, note));
     }
 
-    // First request on load. A reply (GM-only) is the client's cue to build the window.
-    void HandleWhoAmI(Player* target, std::vector<std::string_view> const&)
+    // First request on load. A reply (GM-only) is the client's cue to build the
+    // window. tokens[1], if present, is the addon's "## Version" -- compared here so
+    // a version mismatch (and any outdated config/data) surfaces in the addon's
+    // output window on first open. The extra reply field is ignored by older addons.
+    void HandleWhoAmI(Player* target, std::vector<std::string_view> const& tokens)
     {
-        SendMessage(target, Acore::StringFormat("{}\tok", Msg::WhoAmI));
+        std::string_view addonVersion = tokens.size() > 1 ? tokens[1] : std::string_view{};
+
+        SendMessage(target, Acore::StringFormat("{}\tok\t{}", Msg::WhoAmI, AUCTIONSIM_VERSION));
+
+        AuctionSim* sim = AuctionSim::instance();
+        if (sim && sim->IsConfigOutdated())
+        {
+            SendMessage(
+                target,
+                Acore::StringFormat(
+                    "{}\tconfig\t{}\t{}\t{}",
+                    Msg::Notice,
+                    sim->ConfigHaveVersion(),
+                    sim->ConfigNeedVersion(),
+                    AUCTIONSIM_VERSION));
+        }
+        if (sim && sim->IsDataOutdated())
+        {
+            SendMessage(
+                target,
+                Acore::StringFormat(
+                    "{}\tdata\t{}\t{}\t{}",
+                    Msg::Notice,
+                    sim->DataHaveVersion(),
+                    sim->DataNeedVersion(),
+                    AUCTIONSIM_VERSION));
+        }
+        if (addonVersion.empty())
+        {
+            SendMessage(
+                target,
+                Acore::StringFormat("{}\tversion\t?\t{}\t{}", Msg::Notice, AUCTIONSIM_VERSION, AUCTIONSIM_VERSION));
+        }
+        else if (addonVersion != AUCTIONSIM_VERSION)  // exact-match policy
+        {
+            SendMessage(
+                target,
+                Acore::StringFormat(
+                    "{}\tversion\t{}\t{}\t{}", Msg::Notice, addonVersion, AUCTIONSIM_VERSION, AUCTIONSIM_VERSION));
+        }
     }
 
     using CommandHandler = void (*)(Player*, std::vector<std::string_view> const&);
@@ -468,6 +533,7 @@ namespace
         {Msg::Test, HandleTest},
         {Msg::CleanOverCap, HandleCleanOverCap},
         {Msg::ShowQueue, HandleShowQueue},
+        {Msg::RunQueue, HandleRunQueue},
         {Msg::SetBotChar, HandleSetBotChar},
     };
 
@@ -514,6 +580,42 @@ void AuctionSimAddonBridge::OnPlayerBeforeSendChatMessage(
     msg.clear();  // swallow -- never let this reach the client as a visible whisper
 
     HandleRequest(player, payload);
+}
+
+void AuctionSimAddonBridge::OnPlayerLogin(Player* player)
+{
+    if (!IsAuthorizedGm(player))
+    {
+        return;
+    }
+
+    AuctionSim* sim = AuctionSim::instance();
+    if (!sim)
+    {
+        return;
+    }
+
+    ChatHandler handler(player->GetSession());
+    if (sim->IsConfigOutdated())
+    {
+        handler.PSendSysMessage(
+            "|cffff8000[AuctionSim]|r Your auctionsim.conf is out of date (config schema v{} < v{}). A current "
+            "auctionsim.conf.dist is in etc/modules/ -- merge the new keys or the module may not behave "
+            "correctly.",
+            sim->ConfigHaveVersion(),
+            sim->ConfigNeedVersion());
+    }
+    if (sim->IsDataOutdated())
+    {
+        handler.PSendSysMessage(
+            "|cffff0000[AuctionSim]|r auctionsim.dat is out of date (data schema v{} vs v{}). Pull the latest "
+            "changes and rebuild the module -- the current data file ships with the repo and is redeployed on "
+            "build. The module has no market data until then.",
+            sim->DataHaveVersion(),
+            sim->DataNeedVersion());
+    }
+    // Module<->addon version mismatch needs the addon's version, so it is reported
+    // from the WHOAMI reply (HandleWhoAmI) into the addon window instead.
 }
 
 void AddAuctionSimAddonBridgeScript() { new AuctionSimAddonBridge(); }
