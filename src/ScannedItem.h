@@ -90,6 +90,10 @@ public:
     // chasing a listing priced past the upper-middle of the market.
     uint32 GetBuyCeiling() const;
 
+    // Low end of the band a bid valuation is rolled from: the 25th percentile,
+    // never above GetMarketPrice(). See AuctionPricing::RollBidValuation.
+    uint32 GetBidValuationLow() const;
+
     // The stack size the market conventionally lists this item at -- outlier-
     // trimmed mode, i.e. "the size sellers actually use", not an average that can
     // fall between two conventional sizes. Always 1 for equippable gear.

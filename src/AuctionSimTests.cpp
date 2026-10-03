@@ -700,7 +700,229 @@ namespace
                 Acore::StringFormat("thin tier ({}) did not fire less than deal tier ({})", thinHits, dealHits));
         }
 
+        // Opening bids: clear deals only, and rarer than outbids on the same deal.
+        int openHits = 0;
+        for (int i = 0; i < 600; i++)
+        {
+            if (AuctionPricing::ShouldBidAtPrice(95, 100, true))
+            {
+                return Fail("ShouldBidAtPrice boundaries", "opened on a slim margin");
+            }
+            if (AuctionPricing::ShouldBidAtPrice(50, 100, true)) openHits++;
+        }
+        if (openHits == 0 || openHits >= dealHits)
+        {
+            return Fail(
+                "ShouldBidAtPrice boundaries",
+                Acore::StringFormat("opening hits {} not in (0, deal hits {})", openHits, dealHits));
+        }
+
         return Pass("ShouldBidAtPrice boundaries");
+    }
+
+    // Bid limits with a one-point valuation band, so the rolled valuation is known.
+    AuctionBuyingService::BidLimits FlatLimits(uint32 valuationPerUnit, uint32 vendorBuyPrice = 0)
+    {
+        AuctionBuyingService::BidLimits limits;
+        limits.valuationLowPerUnit = valuationPerUnit;
+        limits.marketPerUnit = valuationPerUnit;
+        limits.vendorBuyPrice = vendorBuyPrice;
+        return limits;
+    }
+
+    TestResult TestRollBidValuationBounds()
+    {
+        for (int i = 0; i < 200; i++)
+        {
+            uint32 v = AuctionPricing::RollBidValuation(700, 1000);
+            if (v < 700 || v > 1000)
+            {
+                return Fail("RollBidValuation bounds", Acore::StringFormat("rolled {} outside [700, 1000]", v));
+            }
+        }
+        if (AuctionPricing::RollBidValuation(1000, 700) > 1000)  // swapped band still bounded
+        {
+            return Fail("RollBidValuation bounds", "swapped band rolled above its high end");
+        }
+        return Pass("RollBidValuation bounds");
+    }
+
+    TestResult TestRollBidAmountBounds()
+    {
+        // Never below the minimum; at most the round-up plus a two-step jump.
+        struct Case
+        {
+            uint32 minimum, step;
+        };
+        for (Case c : {Case{57, 1}, Case{4723, 100}, Case{43712, 1000}, Case{521234, 10000}})
+        {
+            if (AuctionPricing::BidRoundingStep(c.minimum) != c.step)
+            {
+                return Fail(
+                    "RollBidAmount bounds",
+                    Acore::StringFormat("minimum {} rounds by {}, expected {}", c.minimum,
+                        AuctionPricing::BidRoundingStep(c.minimum), c.step));
+            }
+            for (int i = 0; i < 200; i++)
+            {
+                uint32 amount = AuctionPricing::RollBidAmount(c.minimum);
+                if (amount < c.minimum || amount >= c.minimum + 3 * c.step)
+                {
+                    return Fail(
+                        "RollBidAmount bounds",
+                        Acore::StringFormat("minimum {} rolled {} (step {})", c.minimum, amount, c.step));
+                }
+                if (amount != c.minimum && amount % c.step != 0)
+                {
+                    return Fail(
+                        "RollBidAmount bounds",
+                        Acore::StringFormat("minimum {} rolled {}, not a clean multiple of {}", c.minimum, amount,
+                            c.step));
+                }
+            }
+        }
+        return Pass("RollBidAmount bounds");
+    }
+
+    TestResult TestBidTimingNoSniping()
+    {
+        constexpr time_t now = 1'000'000;
+        if (!AuctionPricing::IsTooLateToBid(now + AuctionPricing::kNoBidBeforeExpirySeconds, now) ||
+            AuctionPricing::IsTooLateToBid(now + AuctionPricing::kNoBidBeforeExpirySeconds + 1, now))
+        {
+            return Fail("Bid timing: no sniping", "the no-bid window boundary is off");
+        }
+        for (int i = 0; i < 200; i++)
+        {
+            time_t expire = now + AuctionPricing::kNoBidBeforeExpirySeconds + 600;
+            time_t bidTime = AuctionPricing::RollBidTime(expire, now);
+            if (bidTime < now || AuctionPricing::IsTooLateToBid(expire, bidTime))
+            {
+                return Fail(
+                    "Bid timing: no sniping",
+                    Acore::StringFormat("bid rolled for {}s before expiry", expire - bidTime));
+            }
+        }
+        return Pass("Bid timing: no sniping");
+    }
+
+    TestResult TestBidQueueSkipsLastMinutes(Bot& bot)
+    {
+        time_t now = GameTime::GetGameTime().count();
+        AuctionEntry* testAuction = MakeTestAuctionEntry(0xFFFFFFE5, now + AuctionPricing::kNoBidBeforeExpirySeconds);
+        testAuction->itemCount = 1;
+        testAuction->bid = 10;
+        testAuction->bidder = ObjectGuid::Create<HighGuid::Player>(0x00F00005u);
+
+        AuctionBuyingService testService(bot);
+        for (int i = 0; i < 50; i++)
+        {
+            testService.ConsiderForBid(testAuction, FlatLimits(1'000'000));
+        }
+        bool ok = testService.QueueSize() == 0;
+
+        delete testAuction;
+
+        if (!ok)
+        {
+            return Fail("Bid queue skips the last 30 minutes", "a bid was queued inside the no-bid window");
+        }
+        return Pass("Bid queue skips the last 30 minutes");
+    }
+
+    TestResult TestBidValuationSticks(Bot& bot)
+    {
+        // First look rolls a 500/unit valuation; a later scan offering a far higher
+        // band must not raise it, so the 1050 next bid is never queued.
+        AuctionEntry* testAuction = MakeTestAuctionEntry(0xFFFFFFE6, GameTime::GetGameTime().count() + 100000);
+        testAuction->itemCount = 1;
+        testAuction->bid = 1000;
+        testAuction->bidder = ObjectGuid::Create<HighGuid::Player>(0x00F00006u);
+
+        AuctionBuyingService testService(bot);
+        testService.ConsiderForBid(testAuction, FlatLimits(500));
+        for (int i = 0; i < 50; i++)
+        {
+            testService.ConsiderForBid(testAuction, FlatLimits(1'000'000));
+        }
+        bool ok = testService.QueueSize() == 0;
+
+        delete testAuction;
+
+        if (!ok)
+        {
+            return Fail("Bid valuation sticks", "a later scan raised the auction's valuation");
+        }
+        return Pass("Bid valuation sticks");
+    }
+
+    TestResult TestBidQueueCheapestBuyoutCap(Bot& bot)
+    {
+        // Next bid 1050/unit; the same item can be bought outright for 1050 elsewhere.
+        AuctionEntry* testAuction = MakeTestAuctionEntry(0xFFFFFFE7, GameTime::GetGameTime().count() + 100000);
+        testAuction->itemCount = 1;
+        testAuction->bid = 1000;
+        testAuction->bidder = ObjectGuid::Create<HighGuid::Player>(0x00F00007u);
+
+        AuctionBuyingService testService(bot);
+        AuctionBuyingService::BidLimits limits = FlatLimits(1'000'000);
+        limits.cheapestBuyoutPerUnit = 1050;
+        for (int i = 0; i < 50; i++)
+        {
+            testService.ConsiderForBid(testAuction, limits);
+        }
+        bool ok = testService.QueueSize() == 0;
+
+        delete testAuction;
+
+        if (!ok)
+        {
+            return Fail("Bid queue cheapest-buyout cap", "bid queued at the price of a live buyout");
+        }
+        return Pass("Bid queue cheapest-buyout cap");
+    }
+
+    TestResult TestBidQueueOpeningBids(Bot& bot)
+    {
+        time_t future = GameTime::GetGameTime().count() + 100000;
+        ObjectGuid const botGuid = bot.GetPlayer()->GetGUID();
+
+        // A player's unbid auction at a clear bargain is eventually opened...
+        AuctionEntry* playerAuction = MakeTestAuctionEntry(0xFFFFFFE8, future);
+        playerAuction->itemCount = 1;
+        playerAuction->startbid = 100;
+        playerAuction->owner = ObjectGuid::Create<HighGuid::Player>(0x00F00008u);
+
+        // ...the bot's own unbid listing never is.
+        AuctionEntry* botAuction = MakeTestAuctionEntry(0xFFFFFFE9, future);
+        botAuction->itemCount = 1;
+        botAuction->startbid = 100;
+        botAuction->owner = botGuid;
+
+        AuctionBuyingService testService(bot);
+        for (int i = 0; i < 100; i++)
+        {
+            testService.ConsiderForBid(botAuction, FlatLimits(1'000'000));
+        }
+        bool ownNeverOpened = testService.QueueSize() == 0;
+        for (int i = 0; i < 100 && testService.QueueSize() == 0; i++)
+        {
+            testService.ConsiderForBid(playerAuction, FlatLimits(1'000'000));
+        }
+        bool playerOpened = testService.QueueSize() == 1;
+
+        delete playerAuction;
+        delete botAuction;
+
+        if (!ownNeverOpened)
+        {
+            return Fail("Bid queue opening bids", "the bot opened bidding on its own listing");
+        }
+        if (!playerOpened)
+        {
+            return Fail("Bid queue opening bids", "a bargain unbid player auction was never opened");
+        }
+        return Pass("Bid queue opening bids");
     }
 
     TestResult TestBidQueueHardGate(Bot& bot)
@@ -713,7 +935,7 @@ namespace
         testService.RollTolerance();
         for (int i = 0; i < 50; i++)
         {
-            testService.ConsiderForBid(testAuction, 100, 0);  // market far below the next bid
+            testService.ConsiderForBid(testAuction, FlatLimits(100));  // valuation far below the next bid
         }
         bool ok = testService.QueueSize() == 0;
 
@@ -741,20 +963,20 @@ namespace
         testAuction->buyout = 1050;  // the next bid would reach the buyout
         for (int i = 0; i < 50; i++)
         {
-            testService.ConsiderForBid(testAuction, 1'000'000, 0);
+            testService.ConsiderForBid(testAuction, FlatLimits(1'000'000));
         }
         bool buyoutCapped = testService.QueueSize() == 0;
 
         testAuction->buyout = 0;  // bid-only; the vendor sells it for less than the next bid
         for (int i = 0; i < 50; i++)
         {
-            testService.ConsiderForBid(testAuction, 1'000'000, 1049);
+            testService.ConsiderForBid(testAuction, FlatLimits(1'000'000, 1049));
         }
         bool vendorCapped = testService.QueueSize() == 0;
 
         for (int i = 0; i < 50 && testService.QueueSize() == 0; i++)
         {
-            testService.ConsiderForBid(testAuction, 1'000'000, 1050);  // equal to vendor price is allowed
+            testService.ConsiderForBid(testAuction, FlatLimits(1'000'000, 1050));  // equal to vendor price is allowed
         }
         bool allowedAtVendor = testService.QueueSize() == 1;
 
@@ -785,7 +1007,7 @@ namespace
         AuctionBuyingService testService(bot);
         testService.RollTolerance();
         testService.ConsiderForPurchase(testAuction, 1, 1'000'000, 2'000'000);  // always-buy
-        testService.ConsiderForBid(testAuction, 1'000'000, 0);                  // must be a no-op
+        testService.ConsiderForBid(testAuction, FlatLimits(1'000'000));        // must be a no-op
         bool ok = testService.QueueSize() == 1;
 
         delete testAuction;
@@ -952,6 +1174,9 @@ namespace AuctionSimTests
             TestRollBuyToleranceBounds(),
             TestShouldBuyAtPriceBoundaries(),
             TestShouldBidAtPriceBoundaries(),
+            TestRollBidValuationBounds(),
+            TestRollBidAmountBounds(),
+            TestBidTimingNoSniping(),
             TestRollBuyTimeBounds(),
             TestCalculateRemainingScans(),
             TestListingCountMath(),
@@ -963,6 +1188,10 @@ namespace AuctionSimTests
             TestBuyQueueDedupesRescan(bot),
             TestBuyQueueNotYetDue(bot),
             TestBidQueueHardGate(bot),
+            TestBidQueueSkipsLastMinutes(bot),
+            TestBidValuationSticks(bot),
+            TestBidQueueCheapestBuyoutCap(bot),
+            TestBidQueueOpeningBids(bot),
             TestBidQueueRespectsBuyoutAndVendorCaps(bot),
             TestBidQueueSharesBuyoutDedupe(bot),
             TestProcessDueQueueBidRevalidatesMissing(bot),
@@ -1097,6 +1326,9 @@ namespace AuctionSimTests
         auction->bid = playerBid;
         auction->bidder = ObjectGuid::Create<HighGuid::Player>(0x00FB1D00u);
         uint32 expectedBid = playerBid + AuctionEntry::CalculateAuctionOutBid(playerBid);
+        // The rolled starting bid can sit within one increment of the buyout, where the
+        // bot rightly refuses to bid; make it bid-only (in memory) so the cap can't trip.
+        auction->buyout = 0;
 
         // Throwaway service; a huge ceiling so the walk-away guard never trips.
         AuctionBuyingService testService(bot);
@@ -1118,20 +1350,23 @@ namespace AuctionSimTests
         {
             return Fail(name, "bot did not become the high bidder");
         }
-        if (live->bid != expectedBid)
+        // The bot may round its bid up the way a player types it; never below the minimum.
+        if (live->bid < expectedBid || live->bid >= expectedBid + 3 * AuctionPricing::BidRoundingStep(expectedBid))
         {
             return Fail(
                 name,
-                Acore::StringFormat("bid is {} (expected startbid+outbid = {})", live->bid, expectedBid));
+                Acore::StringFormat("bid is {} (expected startbid+outbid = {}, maybe rounded up)", live->bid,
+                    expectedBid));
         }
 
+        uint32 placedBid = live->bid;  // CleanUpTestAuction frees `live`
         CleanUpTestAuction(live, houseId);
 
         return Pass(
             name,
             Acore::StringFormat(
                 "outbid player on item {} (auction {}): {} -> {}",
-                candidate->GetItemID(), auctionId, playerBid, expectedBid));
+                candidate->GetItemID(), auctionId, playerBid, placedBid));
     }
 
     TestResult RunLiveLevelCapTest(

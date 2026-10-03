@@ -8,7 +8,7 @@ Every 30 minutes (fixed, not configurable), AuctionSim scans both auction houses
 
 - **Listing**: it keeps each item class/quality bucket about as full as a real auction house was observed to be in the scan data -- topping a bucket up only once it drops below the observed lower quartile, and choosing which items fill it weighted by how often each was really listed. A per-bucket multiplier in the config scales that target up or down. New listings get a random quantity, a buyout price rolled around the item's known mean price, and a lower starting bid rolled from the starting-bid-to-buyout ratios seen in the real scan data.
 - **Buying**: for each auction it doesn't already own, if the price is at or under the item's known mean, it's always queued to buy. If the price is above mean but still under the item's known maximum, it's queued with some probability (randomized each scan, to mimic natural demand variance between real players) rather than always or never.
-- **Bidding**: on an auction a real player is already bidding on, it may queue a single small outbid (the game's minimum ~5% increment), but only while that bid still leaves the price below the item's market value, and it walks away if a rival pushes past that. It never removes an auction someone has bid on, so the bidder's gold is never stranded.
+- **Bidding**: it bids like one more player. On an auction a real player is bidding on it may outbid them, and on a player's auction nobody has bid on it may open the bidding when the starting bid is a clear bargain. Each auction gets its own limit, rolled once between the item's lower-quartile and market price, so the bot wins some bid wars and walks away from others. It never bids at or above the cheapest buyout of the same item on the auction house, the auction's own buyout, or the vendor price. Bids are the game's minimum increment, often rounded up to a clean amount the way a player types it. It never bids in an auction's last 30 minutes, so a player it outbids always has time to answer, and it never removes an auction someone has bid on, so the bidder's gold is never stranded.
 - Queued buys and bids execute within 20 minutes of being queued, spread out over time. "Run Queue" in the addon (or `.auctionsim runqueue`) forces them all through immediately.
 - Optional `MaxRequiredLevel`/`MaxItemLevel` caps stop it from listing gear above your realm's level, for progression servers running below the max level.
 
@@ -89,8 +89,8 @@ In the "Listing Multipliers" grid on the right:
 5. First run
 ------------
 - Click "Scan". The bot lists new auctions (each with a buyout and a lower
-  starting bid) and queues actions: items to buy outright, plus small outbids on
-  auctions a real player is already bidding on. Queued actions are spread over
+  starting bid) and queues actions: items to buy outright, plus bids on players'
+  auctions it values (never in an auction's last 30 minutes). Queued actions are spread over
   time, not done all at once - click "Run Queue" to force them all through now.
 - Note: Searching the auction house after running a scan while logged in as the
   bot character can take a little while for the auction db to update if there are

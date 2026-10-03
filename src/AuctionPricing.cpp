@@ -1,6 +1,7 @@
 #include "AuctionPricing.h"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <random>
 #include <utility>
 #include "Random.h"
@@ -46,6 +47,12 @@ namespace
     constexpr float kBidDealBoundary = 0.85f;      // next bid <= 85% of market == a clear deal
     constexpr float kBidDealChancePerScan = 0.60f;
     constexpr float kBidThinChancePerScan = 0.30f;  // next bid is 85-100% of market -- slimmer margin
+    constexpr float kOpenBidChancePerScan = 0.25f;  // opening an unbid auction, clear deals only
+
+    // How often a bid is rounded up to a clean amount, and how often (of those) it
+    // jumps a step or two past it, as a player keen to win would.
+    constexpr float kBidRoundChance = 0.60f;
+    constexpr float kBidJumpChance = 0.15f;
 
     // A queued purchase never waits longer than this before executing.
     constexpr time_t kMaxQueueDelaySeconds = 1200;  // 20 minutes
@@ -272,22 +279,69 @@ namespace AuctionPricing
         return roll_chance_f(AmortizeOverScans(targetChance, remainingScans) * 100.0f);
     }
 
-    bool ShouldBidAtPrice(uint32 nextBidPerUnit, uint32 marketPrice)
+    bool ShouldBidAtPrice(uint32 nextBidPerUnit, uint32 ceilingPerUnit, bool opening)
     {
-        // Hard gate: never outbid at or above the item's buyout-derived typical price.
-        if (marketPrice == 0 || nextBidPerUnit >= marketPrice)
+        // Hard gate: never bid at or above what the auction is worth to the bot.
+        if (ceilingPerUnit == 0 || nextBidPerUnit >= ceilingPerUnit)
         {
             return false;
         }
 
         // A single per-scan roll (not amortised): eager on a clear deal, less so when
-        // the remaining margin to market is slim. A miss just leaves the player in the
-        // lead until the next scan -- "players can get lucky".
-        float position = static_cast<float>(nextBidPerUnit) / static_cast<float>(marketPrice);
-        float chance = position <= kBidDealBoundary ? kBidDealChancePerScan : kBidThinChancePerScan;
+        // the remaining margin is slim. A miss just leaves the player in the lead
+        // until the next scan -- "players can get lucky".
+        float position = static_cast<float>(nextBidPerUnit) / static_cast<float>(ceilingPerUnit);
+        bool const clearDeal = position <= kBidDealBoundary;
+        if (opening)
+        {
+            return clearDeal && roll_chance_f(kOpenBidChancePerScan * 100.0f);
+        }
+        float chance = clearDeal ? kBidDealChancePerScan : kBidThinChancePerScan;
 
         return roll_chance_f(chance * 100.0f);
     }
+
+    uint32 RollBidValuation(uint32 lowPerUnit, uint32 marketPerUnit)
+    {
+        if (lowPerUnit > marketPerUnit)
+        {
+            std::swap(lowPerUnit, marketPerUnit);
+        }
+        return urand(lowPerUnit, marketPerUnit);
+    }
+
+    uint32 BidRoundingStep(uint32 minimumBid)
+    {
+        // The size a player thinks in: 47s 23c -> 48s, 4g 37s -> 4g 40s, 52g 10s ->
+        // 53g. Under a silver the copper amount is left as is.
+        if (minimumBid >= 100000)
+        {
+            return 10000;
+        }
+        if (minimumBid >= 10000)
+        {
+            return 1000;
+        }
+        return minimumBid >= 100 ? 100 : 1;
+    }
+
+    uint32 RollBidAmount(uint32 minimumBid)
+    {
+        if (!roll_chance_f(kBidRoundChance * 100.0f))
+        {
+            return minimumBid;
+        }
+
+        uint32 step = BidRoundingStep(minimumBid);
+        uint64 amount = (static_cast<uint64>(minimumBid) + step - 1) / step * step;
+        if (roll_chance_f(kBidJumpChance * 100.0f))
+        {
+            amount += static_cast<uint64>(step) * urand(1, 2);
+        }
+        return static_cast<uint32>(std::min<uint64>(amount, std::numeric_limits<uint32>::max()));
+    }
+
+    bool IsTooLateToBid(time_t expireTime, time_t now) { return expireTime - now <= kNoBidBeforeExpirySeconds; }
 
     time_t RollBuyTime(time_t expireTime, time_t now)
     {
@@ -297,6 +351,11 @@ namespace AuctionPricing
             return now;
         }
         return now + irand(0, static_cast<int32>(window - 1));
+    }
+
+    time_t RollBidTime(time_t expireTime, time_t now)
+    {
+        return RollBuyTime(expireTime - kNoBidBeforeExpirySeconds, now);
     }
 
     bool IsWithinLevelCap(uint32 itemRequiredLevel, uint32 itemLevel, uint32 maxRequiredLevel, uint32 maxItemLevel)

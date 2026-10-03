@@ -83,17 +83,42 @@ namespace AuctionPricing
         BuyTolerance const& tolerance,
         uint32 remainingScans);
 
-    // True if the bot should place a small outbid on this scan. Hard gate: never
-    // bids when nextBidPerUnit >= marketPrice (the buyout-derived typical price), so
-    // every outbid the bot places leaves the price still below market. Below that
-    // it is a single per-scan roll -- eager on a clear deal (next bid well under
-    // market), less eager on a slim margin -- NOT a cumulative lifetime chance. A
-    // miss just leaves the player in the lead until the next scan.
-    bool ShouldBidAtPrice(uint32 nextBidPerUnit, uint32 marketPrice);
+    // True if the bot should bid on this scan. Hard gate: never bids when
+    // nextBidPerUnit >= ceilingPerUnit (the auction's private valuation, capped by
+    // the cheapest live buyout), so every bid the bot places leaves the price below
+    // what it is worth to the bot. Below that it is a single per-scan roll -- eager
+    // on a clear deal, less eager on a slim margin -- NOT a cumulative lifetime
+    // chance. An opening bid (nobody has bid yet) only fires on a clear deal, and
+    // less often than an outbid: an unbid auction is no contest yet.
+    bool ShouldBidAtPrice(uint32 nextBidPerUnit, uint32 ceilingPerUnit, bool opening = false);
+
+    // Rolls the most the bot will pay per unit for one auction: a point between the
+    // item's lower quartile and its market price. Rolled once per auction and kept,
+    // so each auction faces one bidder with one limit -- some bid wars the bot wins,
+    // the rest it walks away from, instead of it chasing every one up to market.
+    uint32 RollBidValuation(uint32 lowPerUnit, uint32 marketPerUnit);
+
+    // Turns the game's minimum next bid into the amount a player would type: often
+    // rounded up to a clean amount (whole silver, ten silver or whole gold, by
+    // size), sometimes a step or two past it. Always >= minimumBid; the caller
+    // falls back to minimumBid when the rolled amount breaks a cap.
+    uint32 RollBidAmount(uint32 minimumBid);
+
+    // The clean-amount unit RollBidAmount rounds to: 1g from 10g up, 10s from 1g, 1s
+    // from 1s, otherwise copper. A rolled amount is below minimumBid + 3 steps.
+    uint32 BidRoundingStep(uint32 minimumBid);
+
+    // No sniping: the bot never bids in an auction's last 30 minutes (the client's
+    // "Short" time-left band), so a player it outbids always has time to answer.
+    constexpr time_t kNoBidBeforeExpirySeconds = 1800;
+    bool IsTooLateToBid(time_t expireTime, time_t now);
 
     // Rolls when (as an absolute time) a queued purchase should execute, capped at 20
     // minutes out so it always fires before the next scan reconsiders the auction.
     time_t RollBuyTime(time_t expireTime, time_t now);
+
+    // RollBuyTime for a bid: lands before the auction enters the no-bid window.
+    time_t RollBidTime(time_t expireTime, time_t now);
 
     // True if the item is listable under the configured level caps. A cap of 0 means
     // that particular check is disabled.

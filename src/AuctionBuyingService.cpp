@@ -1,5 +1,6 @@
 #include "AuctionBuyingService.h"
 #include <algorithm>
+#include <iterator>
 #include "AuctionHouseSearcher.h"
 #include "AuctionPricing.h"
 #include "Bot.h"
@@ -10,17 +11,42 @@
 
 namespace
 {
-    // Caps every bid the bot places, checked when it is queued and again when it
-    // executes. A bid at or over the buyout is a buyout to core (and leaves players
-    // nothing to bid), so it must stay strictly below; the vendor cap closes the
-    // same gold-cheese vector the buyout path guards against.
-    bool IsWithinBidCaps(AuctionEntry const* auction, uint32 nextBid, uint32 nextBidPerUnit, uint32 vendorBuyPrice)
+    // The least core accepts as the next bid: the starting bid when nobody has bid
+    // yet, otherwise the current bid plus the ~5% minimum increment.
+    uint32 MinimumNextBid(AuctionEntry const* auction)
     {
-        if (auction->buyout > 0 && nextBid >= auction->buyout)
+        return auction->bid ? auction->bid + auction->GetAuctionOutBid() : std::max<uint32>(1, auction->startbid);
+    }
+
+    uint32 PerUnit(AuctionEntry const* auction, uint32 amount)
+    {
+        return amount / std::max<uint32>(1, auction->itemCount);
+    }
+
+    // The bot never bids against itself, and never opens bidding on its own listing
+    // (that would be bidding with nobody else in the room).
+    bool IsBiddable(AuctionEntry const* auction, ObjectGuid botGuid)
+    {
+        return auction->bidder != botGuid && (auction->bid > 0 || auction->owner != botGuid);
+    }
+
+    // Caps every bid the bot places, checked when it is queued and again when it
+    // executes. Below the auction's ceiling (private valuation, capped by the
+    // cheapest live buyout); strictly below its buyout, which core would treat as a
+    // buyout and which would leave players nothing to bid; and within the vendor cap
+    // the buyout path also applies.
+    bool IsWithinBidCaps(AuctionEntry const* auction, uint32 amount, uint32 ceilingPerUnit, uint32 vendorBuyPrice)
+    {
+        uint32 perUnit = PerUnit(auction, amount);
+        if (perUnit >= ceilingPerUnit)
         {
             return false;
         }
-        return AuctionPricing::IsWithinVendorBuyPrice(nextBidPerUnit, vendorBuyPrice);
+        if (auction->buyout > 0 && amount >= auction->buyout)
+        {
+            return false;
+        }
+        return AuctionPricing::IsWithinVendorBuyPrice(perUnit, vendorBuyPrice);
     }
 }
 
@@ -50,35 +76,75 @@ void AuctionBuyingService::ConsiderForPurchase(
     _queuedAuctionIds.insert(auction->Id);
 }
 
-void AuctionBuyingService::ConsiderForBid(AuctionEntry* auction, uint32 marketPrice, uint32 vendorBuyPrice)
+void AuctionBuyingService::ConsiderForBid(AuctionEntry* auction, BidLimits const& limits)
 {
     if (_queuedAuctionIds.count(auction->Id) > 0)
     {
         return;  // already queued (as a buyout or a bid) -- one terminal action per auction
     }
 
-    // The game's minimum next bid: current bid + ~5% (floored at 1c). "Only
-    // slightly overbid" is exactly this.
-    uint32 nextBid = auction->bid + auction->GetAuctionOutBid();
-    uint32 nextBidPerUnit = nextBid / std::max<uint32>(1, auction->itemCount);
-
-    if (!IsWithinBidCaps(auction, nextBid, nextBidPerUnit, vendorBuyPrice))
-    {
-        return;
-    }
-
-    // Hard gate + per-scan eagerness roll (see ShouldBidAtPrice). Both keep every
-    // outbid the bot places below the item's market value.
-    if (!AuctionPricing::ShouldBidAtPrice(nextBidPerUnit, marketPrice))
-    {
-        return;
-    }
-
     time_t now = GameTime::GetGameTime().count();
-    time_t buyTime = AuctionPricing::RollBuyTime(auction->expire_time, now);
-    _queue.push_back(
-        {auction->Id, auction->GetHouseId(), buyTime, QueuedPurchase::Action::Bid, marketPrice, vendorBuyPrice});
+    if (AuctionPricing::IsTooLateToBid(auction->expire_time, now) ||
+        !IsBiddable(auction, _bot.GetPlayerRef().GetGUID()))
+    {
+        return;
+    }
+
+    // One valuation per auction, rolled the first time the bot considers it and
+    // kept for the auction's life, so a bid war ends where this bidder's limit is.
+    auto valuation = _bidValuations.find(auction->Id);
+    if (valuation == _bidValuations.end())
+    {
+        valuation = _bidValuations
+                        .emplace(auction->Id,
+                            AuctionPricing::RollBidValuation(limits.valuationLowPerUnit, limits.marketPerUnit))
+                        .first;
+    }
+
+    // No sense bidding more than the item costs to buy outright elsewhere on the AH.
+    uint32 ceilingPerUnit = valuation->second;
+    if (limits.cheapestBuyoutPerUnit > 0)
+    {
+        ceilingPerUnit = std::min(ceilingPerUnit, limits.cheapestBuyoutPerUnit);
+    }
+
+    uint32 minimumBid = MinimumNextBid(auction);
+    if (!IsWithinBidCaps(auction, minimumBid, ceilingPerUnit, limits.vendorBuyPrice))
+    {
+        return;
+    }
+
+    // Per-scan eagerness roll (see ShouldBidAtPrice); opening an unbid auction is
+    // rarer and needs a clear deal.
+    if (!AuctionPricing::ShouldBidAtPrice(PerUnit(auction, minimumBid), ceilingPerUnit, auction->bid == 0))
+    {
+        return;
+    }
+
+    time_t buyTime = AuctionPricing::RollBidTime(auction->expire_time, now);
+    _queue.push_back({auction->Id, auction->GetHouseId(), buyTime, QueuedPurchase::Action::Bid, ceilingPerUnit,
+        limits.vendorBuyPrice});
     _queuedAuctionIds.insert(auction->Id);
+}
+
+void AuctionBuyingService::PruneBidValuations()
+{
+    // Valuations die with their auction. Checked against every house, so a scan of
+    // one house never drops the other's.
+    for (auto it = _bidValuations.begin(); it != _bidValuations.end();)
+    {
+        bool live = false;
+        for (AuctionHouseId houseId : {AuctionHouseId::Alliance, AuctionHouseId::Horde, AuctionHouseId::Neutral})
+        {
+            AuctionHouseObject* house = sAuctionMgr->GetAuctionsMapByHouseId(houseId);
+            if (house && house->GetAuction(it->first))
+            {
+                live = true;
+                break;
+            }
+        }
+        it = live ? std::next(it) : _bidValuations.erase(it);
+    }
 }
 
 void AuctionBuyingService::SortQueue()
@@ -128,10 +194,10 @@ void AuctionBuyingService::EnqueueForTest(AuctionEntry* auction, time_t buyTime)
 }
 
 void AuctionBuyingService::EnqueueBidForTest(
-    AuctionEntry* auction, time_t buyTime, uint32 marketCeilingPerUnit, uint32 vendorBuyPrice)
+    AuctionEntry* auction, time_t buyTime, uint32 bidCeilingPerUnit, uint32 vendorBuyPrice)
 {
     _queue.push_back(
-        {auction->Id, auction->GetHouseId(), buyTime, QueuedPurchase::Action::Bid, marketCeilingPerUnit,
+        {auction->Id, auction->GetHouseId(), buyTime, QueuedPurchase::Action::Bid, bidCeilingPerUnit,
          vendorBuyPrice});
     _queuedAuctionIds.insert(auction->Id);
 }
@@ -199,30 +265,40 @@ void AuctionBuyingService::PlaceBid(QueuedPurchase const& entry)
     }
 
     ObjectGuid const botGuid = _bot.GetPlayerRef().GetGUID();
-    if (!auction->bidder || auction->bidder == botGuid || auction->bid == 0)
+    if (!IsBiddable(auction, botGuid))
     {
-        return;  // nothing to outbid, or the bot is already the high bidder
+        return;  // the bot already holds the high bid
+    }
+    if (AuctionPricing::IsTooLateToBid(auction->expire_time, GameTime::GetGameTime().count()))
+    {
+        return;  // no sniping: the auction slipped into its last 30 minutes during the delay
     }
 
-    uint32 nextBid = auction->bid + auction->GetAuctionOutBid();
-    uint32 nextBidPerUnit = nextBid / std::max<uint32>(1, auction->itemCount);
-    if (nextBidPerUnit >= entry.marketCeilingPerUnit)
+    // A rival may have bid during the delay: re-check against the current minimum.
+    uint32 minimumBid = MinimumNextBid(auction);
+    if (!IsWithinBidCaps(auction, minimumBid, entry.bidCeilingPerUnit, entry.vendorBuyPrice))
     {
-        return;  // a rival pushed the price past our walk-away point
+        return;  // pushed past this bidder's limit, up to the buyout, or past the vendor price
     }
-    if (!IsWithinBidCaps(auction, nextBid, nextBidPerUnit, entry.vendorBuyPrice))
+
+    // The amount a player would type; the bare minimum if the rounded one breaks a cap.
+    uint32 amount = AuctionPricing::RollBidAmount(minimumBid);
+    if (!IsWithinBidCaps(auction, amount, entry.bidCeilingPerUnit, entry.vendorBuyPrice))
     {
-        return;  // a rival pushed the next bid up to the buyout or past the vendor price
+        amount = minimumBid;
     }
 
     auto trans = CharacterDatabase.BeginTransaction();
 
     // Must run BEFORE the mutation below: it refunds the current auction->bid to
-    // the current auction->bidder.
-    sAuctionMgr->SendAuctionOutbiddedMail(auction, nextBid, &_bot.GetPlayerRef(), trans);
+    // the current auction->bidder. An opening bid has nobody to refund.
+    if (auction->bidder)
+    {
+        sAuctionMgr->SendAuctionOutbiddedMail(auction, amount, &_bot.GetPlayerRef(), trans);
+    }
 
     auction->bidder = botGuid;
-    auction->bid = nextBid;
+    auction->bid = amount;
     sAuctionMgr->GetAuctionHouseSearcher()->UpdateBid(auction);
 
     CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_AUCTION_BID);

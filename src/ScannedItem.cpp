@@ -102,6 +102,13 @@ uint32 ScannedItem::GetBuyCeiling() const
     return price.q3 > market ? price.q3 : market;
 }
 
+uint32 ScannedItem::GetBidValuationLow() const
+{
+    uint32 market = GetMarketPrice();
+    uint32 low = FirstPositive({price.q1}, GetListLow());
+    return low < market ? low : market;
+}
+
 uint32 ScannedItem::GetTypicalStackSize() const
 {
     return FirstPositive({stack.adjMode, stack.adjMedian, stack.mode, stack.median}, 1);

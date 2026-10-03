@@ -62,8 +62,8 @@ In the "Listing Multipliers" grid on the right:
 5. First run
 ------------
 - Click "Scan". The bot lists new auctions (each with a buyout and a lower
-  starting bid) and queues actions: items to buy outright, plus small outbids on
-  auctions a real player is already bidding on. Queued actions are spread over
+  starting bid) and queues actions: items to buy outright, plus bids on players'
+  auctions it values (never in an auction's last 30 minutes). Queued actions are spread over
   time, not done all at once - click "Run Queue" to force them all through now.
 - Note: Searching the auction house after running a scan while logged in as the
   bot character can take a little while for the auction db to update if there are

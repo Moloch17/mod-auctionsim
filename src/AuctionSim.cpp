@@ -1,4 +1,5 @@
 #include "AuctionSim.h"
+#include <algorithm>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -259,6 +260,25 @@ void AuctionSim::ScanAuctions(AuctionHouseId _AuctionHouseId)
     ObjectGuid const botGuid = bot->GetPlayer()->GetGUID();
 
     buyingService->RollTolerance();
+    buyingService->PruneBidValuations();
+
+    // Cheapest per-unit buyout of each item on this house: a player would not bid
+    // more than it costs to buy the same item outright two rows down.
+    std::unordered_map<uint32, uint32> cheapestBuyoutPerUnit;
+    for (auto const& entry : auctions)
+    {
+        AuctionEntry const* auction = entry.second;
+        if (auction->buyout == 0)
+        {
+            continue;
+        }
+        uint32 perUnit = auction->buyout / std::max<uint32>(1, auction->itemCount);
+        auto [cheapest, inserted] = cheapestBuyoutPerUnit.emplace(auction->item_template, perUnit);
+        if (!inserted && perUnit < cheapest->second)
+        {
+            cheapest->second = perUnit;
+        }
+    }
 
     for (auto it = auctions.begin(); it != auctions.end(); ++it)
     {
@@ -319,13 +339,22 @@ void AuctionSim::ScanAuctions(AuctionHouseId _AuctionHouseId)
             }
         }
 
-        // Bid consideration -- whenever a real player holds the high bid, on any
-        // auction including the bot's own. ConsiderForBid is a no-op if this auction
-        // was just queued for buyout above (shared dedupe set), so on a non-bot
-        // auction an acceptable buyout still wins over an outbid.
-        if (auction->bid > 0 && auction->bidder && auction->bidder != botGuid)
+        // Bid consideration -- whenever a real player holds the high bid (on any
+        // auction, including the bot's own), or to open bidding on a player's auction
+        // nobody has bid on. ConsiderForBid is a no-op if this auction was just
+        // queued for buyout above (shared dedupe set), so on a non-bot auction an
+        // acceptable buyout still wins over a bid.
+        bool const playerHoldsBid = auction->bid > 0 && auction->bidder && auction->bidder != botGuid;
+        bool const openable = auction->bid == 0 && !isBotOwned;
+        if (playerHoldsBid || openable)
         {
-            buyingService->ConsiderForBid(auction, scannedItem->GetMarketPrice(), vendorBuyPrice);
+            AuctionBuyingService::BidLimits limits;
+            limits.valuationLowPerUnit = scannedItem->GetBidValuationLow();
+            limits.marketPerUnit = scannedItem->GetMarketPrice();
+            limits.vendorBuyPrice = vendorBuyPrice;
+            auto cheapest = cheapestBuyoutPerUnit.find(auction->item_template);
+            limits.cheapestBuyoutPerUnit = cheapest != cheapestBuyoutPerUnit.end() ? cheapest->second : 0;
+            buyingService->ConsiderForBid(auction, limits);
         }
     }
 
