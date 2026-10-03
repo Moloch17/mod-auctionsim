@@ -5,9 +5,11 @@ Input: out/nerfed_history.parquet (stage 1b), out/s3/items.parquet.
 
 The site keeps every 6-hourly point for ~30 days and thins older ones, so
 every statistic is taken on one point per item per day (the day's last) to
-keep windows comparable. Two windows per faction: `train` (everything before
-the last HOLDOUT_DAYS) and `holdout` (the last HOLDOUT_DAYS), so a tuned
-simulation can be checked on a period it was not tuned on.
+keep windows comparable. Three windows per faction: `holdout` (the last
+WINDOW_DAYS), `tune` (the WINDOW_DAYS before it) and `train` (the rest). The
+simulator's demand scale is tuned on `tune` and scored once on `holdout`.
+window_start is the window's first instant (unix s), where a simulation of it
+starts.
 
 Per faction x window x item (out/s5/targets.parquet):
   days         days the item was on the AH at the site's snapshot
@@ -25,7 +27,7 @@ import polars as pl
 from common import OUT
 
 S5 = OUT / "s5"
-HOLDOUT_DAYS = 90
+WINDOW_DAYS = 90
 
 
 def main():
@@ -37,8 +39,12 @@ def main():
              .sort("faction", "item", "day"))
     end = daily.group_by("faction").agg(end=pl.col("day").max())
     daily = (daily.join(end, on="faction")
-             .with_columns(window=pl.when(pl.col("day") > pl.col("end") - pl.duration(days=HOLDOUT_DAYS))
-                           .then(pl.lit("holdout")).otherwise(pl.lit("train"))))
+             .with_columns(window=pl.when(pl.col("day") > pl.col("end") - pl.duration(days=WINDOW_DAYS))
+                           .then(pl.lit("holdout"))
+                           .when(pl.col("day") > pl.col("end") - pl.duration(days=2 * WINDOW_DAYS))
+                           .then(pl.lit("tune")).otherwise(pl.lit("train"))))
+    starts = daily.group_by("faction", "window").agg(
+        window_start=(pl.col("day").min().cast(pl.Datetime("ms")).dt.epoch("s")))
     site_days = daily.group_by("faction", "window").agg(site_days=pl.col("day").n_unique())
     daily = daily.with_columns(
         ret=(pl.col("buyout_median").log() - pl.col("buyout_median").log().shift(1)).over("faction", "item", "window"),
@@ -50,6 +56,7 @@ def main():
             min_med=(pl.col("buyout_min") / pl.col("buyout_median")).median(), vol=pl.col("ret").std(),
             *[pl.col("rel_units").filter(pl.col("wd") == d).mean().alias(f"wd_{d}") for d in range(7)])
          .join(site_days, on=["faction", "window"])
+         .join(starts, on=["faction", "window"])
          .with_columns(presence=pl.col("days") / pl.col("site_days"))
          .join(items, on="item", how="left"))
     t.write_parquet(S5 / "targets.parquet")

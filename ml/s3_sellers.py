@@ -13,14 +13,16 @@ Outputs (out/s3/):
   posts.parquet     one row per (t1, seller, item, count, minbid, buyout) with
                     new count, price ratios and market context:
                       ratio_min  unit buyout / cheapest unit buyout at t0
-                      ratio_ref  unit buyout / the item's reference price
-                                 (median of its snapshot medians)
+                      ratio_ref  unit buyout / the item's reference price at
+                                 t0 (common.add_reference: rolling median of
+                                 the prices it was posted at)
                       bid_ratio  minbid / buyout
   sellers.parquet   per named seller: volume, breadth, pricing and stack
                     habits, and `type` (k-means cluster, the v1 type embedding)
   types.parquet     per type x item class: posts per snapshot per seller,
                     stack/duration/bid-only habits (the v1 volume model)
-  price_model.pkl   gradient boosting, with residuals for sampling, for
+  price_model.pkl   gradient boosting, with training residuals per seller
+                    type (type -1: unclustered and unnamed) for sampling, for
                       price_min  log(ratio_min) when the item has a buyout up:
                                  sellers price against the cheapest listing
                                  (median post 0.99x it), not a long-run level
@@ -39,7 +41,7 @@ from sklearn.cluster import KMeans
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler
 
-from common import FACTION_NAMES, OUT
+from common import FACTION_NAMES, OUT, add_reference
 
 S3 = OUT / "s3"
 TYPES = 6
@@ -57,7 +59,6 @@ def posts_for(faction):
     name = FACTION_NAMES[faction]
     tr = pl.scan_parquet(OUT / "transitions" / name / "*.parquet")
     mk = pl.scan_parquet(OUT / "market" / name / "*.parquet")
-    ref = mk.group_by("item").agg(ref_unit=pl.col("med_unit").median())
     own = (tr.filter(pl.col("n0") > 0, pl.col("buyout") > 0)
            .group_by("t0", "seller", "item")
            .agg(own_n0=pl.col("n0").sum(), own_min0=(pl.col("buyout") / pl.col("count")).min()))
@@ -65,8 +66,8 @@ def posts_for(faction):
              .select("t0", "t1", "gap_h", "seller", "item", "suffix", "count", "minbid", "buyout", "new",
                      "n1_tl3", "n1_tl4")
              .join(mk.rename({"t": "t0"}), on=["t0", "item"], how="left")
-             .join(ref, on="item", how="left")
              .join(own, on=["t0", "seller", "item"], how="left")
+             .pipe(add_reference, faction, "t0").rename({"ref": "ref_unit"})
              .with_columns(
                  faction=pl.lit(faction, pl.Int8),
                  unit=pl.when(pl.col("buyout") > 0).then(pl.col("buyout") / pl.col("count")),
@@ -158,6 +159,9 @@ def fit(df, target, cutoff, features=FEATURES):
     xte, yte = test.select(features).to_numpy(), test[target].to_numpy()
     pred = model.predict(xte)
     resid = ytr - model.predict(xtr)
+    # Residuals per seller type: pooled, a merchant would draw a dumper's or an overpricer's error.
+    types = train["type"].to_numpy()
+    resid = {int(t): resid[types == t] for t in np.unique(types)}
     base = np.mean(np.abs(yte - np.median(ytr)))
     return model, resid, {"train": train.height, "test": test.height, "mae": float(np.mean(np.abs(yte - pred))),
                           "mae_median_baseline": float(base), "r2": float(model.score(xte, yte))}
