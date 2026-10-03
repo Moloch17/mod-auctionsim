@@ -39,7 +39,7 @@ from s4_demand import RATIO_BINS
 S3, S4, S5 = OUT / "s3", OUT / "s4", OUT / "s5"
 RATE_DAYS = 60
 CUT = 0.05
-TLEFT_MIN_HOURS = {1: 0, 2: 0.5, 3: 2, 4: 12}
+TLEFT_MIN_HOURS = {1: 0.0, 2: 0.5, 3: 2.0, 4: 12.0}
 
 
 def ratio_bin_index(r):
@@ -105,8 +105,8 @@ def main():
     # Warm start from the real snapshot.
     a = (pl.read_parquet(OUT / "auctions" / args.faction / f"{start}.parquet")
          .filter(pl.col("item").is_in(item_ids), pl.col("buyout") > 0))
-    lo = a["tleft"].replace_strict(TLEFT_MIN_HOURS, default=0).to_numpy()
-    hi = a["tleft"].replace_strict(TLEFT_MAX_HOURS, default=48).to_numpy()
+    lo = a["tleft"].replace_strict(TLEFT_MIN_HOURS, default=0.0, return_dtype=pl.Float64).to_numpy()
+    hi = a["tleft"].replace_strict(TLEFT_MAX_HOURS, default=48.0, return_dtype=pl.Float64).to_numpy()
     L = {"seller": a["seller"].to_list(), "item": a["item"].to_numpy(), "count": a["count"].to_numpy(),
          "unit": (a["buyout"] / a["count"]).to_numpy(), "end": rng.uniform(lo, hi)}
 

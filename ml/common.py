@@ -18,7 +18,7 @@ ALLIANCE, HORDE = 2, 6
 FACTION_NAMES = {ALLIANCE: "alliance", HORDE: "horde"}
 
 # Auctioneer TLEFT buckets (3.3.5): upper bound of the time left, in hours.
-TLEFT_MAX_HOURS = {1: 0.5, 2: 2, 3: 12, 4: 48}
+TLEFT_MAX_HOURS = {1: 0.5, 2: 2.0, 3: 12.0, 4: 48.0}
 
 # The box also runs the live worldserver: cap worker processes, and polars
 # threads per worker (set before any `import polars`).
