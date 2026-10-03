@@ -16,6 +16,7 @@
 #include "Log.h"
 #include "Mail.h"
 #include "ScriptMgr.h"
+#include "World.h"
 #include "WorldConfig.h"
 
 namespace
@@ -133,13 +134,6 @@ void AuctionSim::OnStartup()
         return;
     }
 
-    if (ServerConfigs::CONFIG_ALLOW_TWO_SIDE_INTERACTION_AUCTION == 1)
-    {
-        LOG_ERROR("module", "AuctionSim: Two sided auction interaction is not allowed");
-        isEnabled = false;
-        return;
-    }
-
     if (!StartOrReloadBot(false))  // config is fresh at boot; no reload
     {
         isEnabled = false;
@@ -158,6 +152,14 @@ bool AuctionSim::StartOrReloadBot(bool reloadConfig)
 {
     if (!config)
     {
+        return false;
+    }
+
+    // Checked here rather than only at startup, so enabling from the addon can't
+    // bypass it. With two-side auctions, both factions share one house.
+    if (sWorld->getBoolConfig(CONFIG_ALLOW_TWO_SIDE_INTERACTION_AUCTION))
+    {
+        LOG_ERROR("module", "AuctionSim: Two sided auction interaction is not allowed");
         return false;
     }
 

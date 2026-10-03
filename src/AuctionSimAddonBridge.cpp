@@ -19,6 +19,8 @@
 #include "SharedDefines.h"
 #include "StringFormat.h"
 #include "Tokenize.h"
+#include "World.h"
+#include "WorldConfig.h"
 #include "WorldSession.h"
 
 namespace
@@ -152,7 +154,9 @@ namespace
             {
                 SendError(
                     target,
-                    "Enabled saved, but the bot can't run until a valid bot character is set (use Set Bot Char).");
+                    sWorld->getBoolConfig(CONFIG_ALLOW_TWO_SIDE_INTERACTION_AUCTION)
+                        ? "Enabled saved, but the bot can't run while AllowTwoSide.Interaction.Auction = 1."
+                        : "Enabled saved, but the bot can't run until a valid bot character is set (use Set Bot Char).");
             }
             return;
         }
@@ -424,6 +428,10 @@ namespace
         else if (sim->StartOrReloadBot())
         {
             note = "Bot reloaded; no restart needed.";
+        }
+        else if (sWorld->getBoolConfig(CONFIG_ALLOW_TWO_SIDE_INTERACTION_AUCTION))
+        {
+            note = "Written to auctionsim.conf, but the bot can't run while AllowTwoSide.Interaction.Auction = 1.";
         }
         else
         {
