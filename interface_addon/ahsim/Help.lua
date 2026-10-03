@@ -143,7 +143,8 @@ Each notice shows once per version, so a fixed problem stops repeating.
 
 Notes
 -----
-- Mail the bot (and every market seller) would get from its own auctions is
-  discarded automatically.
+- Auction-house mail to the bot (and every market seller) is discarded
+  automatically. Other mail to them (from a player or a GM) is delivered as
+  usual and returns to its sender when it expires.
 - Everything set here is written to auctionsim.conf, so it survives a restart.
 ]]

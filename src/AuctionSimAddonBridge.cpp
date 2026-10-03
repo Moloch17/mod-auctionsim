@@ -359,6 +359,11 @@ namespace
         {
             return;
         }
+        if (AuctionSim::instance()->IsMarketPurged())
+        {
+            SendError(target, "The market is stopped by a purge until restart or \".auctionsim market reload\".");
+            return;
+        }
 
         auto start = std::chrono::high_resolution_clock::now();
         size_t before = AuctionSim::instance()->GetBuyQueue().size();

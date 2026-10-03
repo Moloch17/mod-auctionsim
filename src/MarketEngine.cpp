@@ -294,7 +294,23 @@ namespace Market
         return Done();
     }
 
-    void FillRun::Result(std::vector<Listing>& out) const
+    uint64 FillRun::Survivors() const
+    {
+        return static_cast<uint64>(std::count_if(_virtual.begin(), _virtual.end(),
+            [this](Listing const& listing) { return listing.expire > _endClock; }));
+    }
+
+    uint64 FillRun::SellersUp() const
+    {
+        uint64 total = 0;
+        for (uint32 up : _botUp)
+        {
+            total += up;
+        }
+        return total;
+    }
+
+    void FillRun::Result(std::vector<Listing>& out, Rng& rng) const
     {
         out.clear();
         for (Listing const& listing : _virtual)
@@ -304,11 +320,20 @@ namespace Market
                 out.push_back(listing);
             }
         }
-        // Per item, latest expiry first; keep all but the first botUp[item] from the end.
+        uint64 const survivors = out.size();
+        uint64 const sellersUp = SellersUp();
+        uint64 budget = survivors > sellersUp ? survivors - sellersUp : 0;
+
+        // Per item, latest expiry first, so an item's excess is its first entries.
         std::sort(out.begin(), out.end(), [](Listing const& a, Listing const& b) {
             return a.itemIdx != b.itemIdx ? a.itemIdx < b.itemIdx : a.expire > b.expire;
         });
-        size_t write = 0;
+        struct Excess
+        {
+            size_t begin;
+            size_t count;
+        };
+        std::vector<Excess> excess;
         size_t i = 0;
         while (i < out.size())
         {
@@ -318,13 +343,30 @@ namespace Market
                 ++j;
             }
             size_t const have = out[i].itemIdx < _botUp.size() ? _botUp[out[i].itemIdx] : 0;
-            size_t const keep = (j - i) > have ? (j - i) - have : 0;
-            for (size_t k = i; k < i + keep; ++k)
+            if (j - i > have)
             {
-                out[write++] = out[k];
+                excess.push_back({i, (j - i) - have});
             }
             i = j;
         }
-        out.resize(write);
+
+        // Items in random order (Fisher-Yates) until the house total is reached.
+        for (size_t k = excess.size(); k > 1; --k)
+        {
+            size_t const pick = static_cast<size_t>(rng.Next() % k);
+            std::swap(excess[k - 1], excess[pick]);
+        }
+        std::vector<Listing> chosen;
+        for (Excess const& item : excess)
+        {
+            if (budget == 0)
+            {
+                break;
+            }
+            size_t const take = static_cast<size_t>(std::min<uint64>(item.count, budget));
+            chosen.insert(chosen.end(), out.begin() + item.begin, out.begin() + item.begin + take);
+            budget -= take;
+        }
+        out.swap(chosen);
     }
 }

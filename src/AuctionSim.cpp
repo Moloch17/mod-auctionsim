@@ -610,13 +610,12 @@ void AuctionSimMailManager::OnBeforeMailDraftSendMailTo(
     bool& deleteMailItemsFromDB,
     bool& sendMail)
 {
-    if (IsBotCharacter(receiver.GetPlayerGUIDLow()))
+    if (AuctionSim::ShouldSwallowMail(IsBotCharacter(receiver.GetPlayerGUIDLow()), sender))
     {
+        // Sale proceeds, returned deposits, won / expired / cancelled items, outbid
+        // refunds: none of it is wanted by a character that never logs in.
         sendMail = false;
-        if (sender.GetMailMessageType() == MAIL_AUCTION)
-        {
-            deleteMailItemsFromDB = true;
-        }
+        deleteMailItemsFromDB = true;
     }
 }
 

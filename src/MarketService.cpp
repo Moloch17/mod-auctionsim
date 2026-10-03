@@ -305,7 +305,7 @@ void MarketService::FinishFill(size_t faction)
 {
     Fill& fill = _fills[faction];
     fill.running = false;
-    fill.run.Result(_fillScratch);
+    fill.run.Result(_fillScratch, _rng);
 
     // The survivors go through the normal creation queue, each as one listing that
     // keeps its simulated expiry (its posting duration still sets the deposit).
@@ -332,11 +332,13 @@ void MarketService::FinishFill(size_t faction)
     fill.result = static_cast<uint32>(_fillScratch.size());
     LOG_INFO(
         "module",
-        "AuctionSim: market fill house {}: {} simulated posts, {} sales, {} listings queued for creation, {} us "
-        "of simulation",
+        "AuctionSim: market fill house {}: {} simulated posts, {} sales, {} survivors, {} seller listings already "
+        "up, {} listings queued for creation, {} us of simulation",
         Market::FactionHouse(faction),
         fill.run.Posted(),
         fill.run.Sold(),
+        fill.run.Survivors(),
+        fill.run.SellersUp(),
         fill.result,
         fill.micros);
 }

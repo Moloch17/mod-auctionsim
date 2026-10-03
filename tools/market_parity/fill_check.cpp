@@ -46,7 +46,7 @@ namespace
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - tick).count());
         }
         std::vector<Market::Listing> out;
-        fill.Result(out);
+        fill.Result(out, rng);
         auto elapsed = std::chrono::steady_clock::now() - start;
         micros = std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
         return out;

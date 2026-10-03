@@ -11,6 +11,7 @@
 #include "AuctionSimTests.h"
 #include "AuctionSimVersion.h"
 #include "Bot.h"
+#include "Mail.h"
 #include "MarketBots.h"
 #include "MarketData.h"
 #include "MarketService.h"
@@ -78,6 +79,13 @@ public:
     bool IsMarketBot(uint32 lowGuid) const { return marketRoster.IsBot(lowGuid); }
     // The buyer bot or a market seller: every mail to these is discarded.
     bool IsModuleCharacter(uint32 lowGuid) const;
+    // Only the auction house's own mail to a module character is discarded. Anything
+    // else (a player's, a GM's, a creature's or calendar mail) is delivered as usual
+    // and, unread, goes back to its sender when it expires, so no one loses an item.
+    static bool ShouldSwallowMail(bool toModuleCharacter, MailSender const& sender)
+    {
+        return toModuleCharacter && sender.GetMailMessageType() == MAIL_AUCTION;
+    }
     bool IsMarketMode() const { return config && config->marketMode; }
     MarketService* GetMarket() const { return market.get(); }
     Market::Data const* GetMarketData() const { return marketData.get(); }

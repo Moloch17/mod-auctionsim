@@ -122,10 +122,15 @@ namespace Market
         uint64 Posted() const { return _posted; }
         uint64 Sold() const { return _sold; }
 
-        // After Done(): the survivors still up at endClock, minus, per item, as many as
-        // the sellers already have up (the earliest-expiring survivors are dropped).
-        // `expire` is absolute; owner is the virtual poster's owner id.
-        void Result(std::vector<Listing>& out) const;
+        // After Done(), MARKET_FORMAT.md's Fill step 3: of the S survivors still up at
+        // endClock, add at most S - E (E = the sellers' listings already up): per item
+        // the excess of survivors over the sellers' own (its earliest-expiring survivors
+        // dropped), items taken in random order until S - E are chosen (the last item
+        // partly, latest-expiring first). `expire` is absolute; owner is the virtual
+        // poster's owner id.
+        void Result(std::vector<Listing>& out, Rng& rng) const;
+        uint64 Survivors() const;    // S
+        uint64 SellersUp() const;    // E
 
     private:
         Faction const* _fac = nullptr;

@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include "ASConfig.h"
+#include "AuctionSim.h"
 #include "AuctionBuyingService.h"
 #include "AuctionListingService.h"
 #include "AuctionPricing.h"
@@ -1972,7 +1973,7 @@ namespace
         {
         }
         std::vector<Market::Listing> out;
-        fill.Result(out);
+        fill.Result(out, rng);
         if (micros)
         {
             *micros = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -1981,36 +1982,36 @@ namespace
         return out;
     }
 
-    TestResult TestMarketFill()
+    // One fill check on a synthetic market of `items` items: from empty it should reach
+    // the steady state of a 4-day run (count and items up within 15%), and on that full
+    // house it should add at most 10%. Appends a summary to `detail`.
+    bool CheckFill(uint32 items, uint64 seed, std::string& detail)
     {
-        std::string const name = "Market fill";
         Market::Data data;
         std::string error;
-        // Thick items (tens of listings each) at a moderate size: the whole test is about
-        // 0.3 s at -O2 on the world thread.
-        if (!ParseFixture(SyntheticMarket(300, 1500, 50, 11), data, error))
+        if (!ParseFixture(SyntheticMarket(items, 1500, 50, seed), data, error))
         {
-            return Fail(name, Acore::StringFormat("synthetic market refused: {}", error));
+            detail += Acore::StringFormat("synthetic market refused: {}", error);
+            return false;
         }
         double const scale = 0.5;
         data.SetRates(scale, 0.5);
         Market::Faction const& fac = data.factions[0];
         uint64 const now = 1783296000ULL + 21 * 86400;
-        Market::Rng rng(31);
+        Market::Rng rng(seed + 20);
 
         // Steady state: 4 days from empty (twice the longest duration).
-        auto testStart = std::chrono::steady_clock::now();
         std::vector<Market::Listing> steady = LongRun(fac, 50, scale, 96, now, rng);
         long long micros = 0;
         std::vector<Market::Listing> fromEmpty = RunFill(fac, {}, 50, scale, now, rng, &micros);
         std::vector<Market::Listing> onFull = RunFill(fac, steady, 50, scale, now, rng);
 
-        // Every survivor expires in the future, within 48 h.
         for (Market::Listing const& listing : fromEmpty)
         {
             if (listing.expire <= now || listing.expire > now + 48 * 3600)
             {
-                return Fail(name, Acore::StringFormat("a survivor expires at {} (now {})", listing.expire, now));
+                detail += Acore::StringFormat("a survivor expires at {} (now {})", listing.expire, now);
+                return false;
             }
         }
 
@@ -2019,9 +2020,11 @@ namespace
         double const itemsRatio =
             static_cast<double>(ItemsUp(fromEmpty)) / std::max<double>(1.0, static_cast<double>(ItemsUp(steady)));
         double const topUp = static_cast<double>(onFull.size()) / std::max(1.0, steadyCount);
-        std::string detail = Acore::StringFormat(
-            "long run {} listings / {} items; fill from empty {} / {} ({:.0f}% / {:.0f}%) in {} us; "
-            "fill on the full house adds {} ({:.0f}%); test {} ms",
+        detail += Acore::StringFormat(
+            "{}{:.1f} listings/item: long run {} listings / {} items; fill from empty {} / {} ({:.0f}% / {:.0f}%) "
+            "in {} us; on the full house adds {} ({:.0f}%)",
+            detail.empty() ? "" : "; ",
+            steadyCount / std::max<double>(1.0, static_cast<double>(ItemsUp(steady))),
             steady.size(),
             ItemsUp(steady),
             fromEmpty.size(),
@@ -2030,20 +2033,51 @@ namespace
             itemsRatio * 100.0,
             micros,
             onFull.size(),
-            topUp * 100.0,
-            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - testStart)
-                .count());
-        if (std::fabs(countRatio - 1.0) > 0.15 || std::fabs(itemsRatio - 1.0) > 0.15)
+            topUp * 100.0);
+        return std::fabs(countRatio - 1.0) <= 0.15 && std::fabs(itemsRatio - 1.0) <= 0.15 && topUp <= 0.10;
+    }
+
+    TestResult TestMarketFill()
+    {
+        // Thick items (~20 listings each) and thin ones (~4, like the real file, where a
+        // per-item subtraction alone added half a house to a full one). About 0.3 s at
+        // -O2 on the world thread.
+        auto start = std::chrono::steady_clock::now();
+        std::string detail;
+        bool ok = CheckFill(300, 11, detail);
+        ok = CheckFill(4000, 12, detail) && ok;
+        detail += Acore::StringFormat("; test {} ms",
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count());
+        return ok ? Pass("Market fill", detail) : Fail("Market fill", detail);
+    }
+
+    TestResult TestMailSwallowing()
+    {
+        std::string const name = "Mail to module characters";
+        struct Case
         {
-            return Fail(name, detail);
-        }
-        // Per item, only the fill's excess over what is up is created: Poisson noise on
-        // thin items, so "little", not nothing.
-        if (topUp > 0.35)
+            bool toModule;
+            MailMessageType type;
+            bool swallow;
+        };
+        Case const cases[] = {
+            {true, MAIL_AUCTION, true},      // sale proceeds, won / expired items, outbid refunds
+            {true, MAIL_NORMAL, false},      // a player's or GM's mail: delivered, returns on expiry
+            {true, MAIL_CREATURE, false},    // NPC / quest mail
+            {true, MAIL_GAMEOBJECT, false},
+            {true, MAIL_CALENDAR, false},
+            {false, MAIL_AUCTION, false},    // a player's auction mail is never touched
+            {false, MAIL_NORMAL, false},
+        };
+        for (Case const& c : cases)
         {
-            return Fail(name, detail);
+            if (AuctionSim::ShouldSwallowMail(c.toModule, MailSender(c.type, 1)) != c.swallow)
+            {
+                return Fail(name, Acore::StringFormat("type {} to {} character: swallow should be {}",
+                    static_cast<uint32>(c.type), c.toModule ? "a module" : "a player", c.swallow));
+            }
         }
-        return Pass(name, detail);
+        return Pass(name, "only auction-house mail to module characters is discarded");
     }
 
     TestResult TestMarketPurgePlan()
@@ -2502,6 +2536,7 @@ namespace AuctionSimTests
             TestMarketStepCost(),
             TestMarketFill(),
             TestMarketPurgePlan(),
+            TestMailSwallowing(),
         };
         if (loaded)
         {

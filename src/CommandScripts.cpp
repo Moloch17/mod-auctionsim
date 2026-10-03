@@ -72,6 +72,13 @@ public:
             return true;
         }
 
+        if (AuctionSim::instance()->IsMarketPurged())
+        {
+            handler->SendSysMessage(
+                "The market is stopped by a purge until restart or \".auctionsim market reload\"; nothing to scan.");
+            return true;
+        }
+
         size_t queueSizeBefore = AuctionSim::instance()->GetBuyQueue().size();
         long long elapsed = TimedMs([] { AuctionSim::instance()->RunScan(); });
         size_t queueSizeAfter = AuctionSim::instance()->GetBuyQueue().size();
