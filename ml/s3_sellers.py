@@ -57,7 +57,7 @@ def posts_for(faction):
     name = FACTION_NAMES[faction]
     tr = pl.scan_parquet(OUT / "transitions" / name / "*.parquet")
     mk = pl.scan_parquet(OUT / "market" / name / "*.parquet")
-    ref = mk.group_by("item").agg(ref_unit=pl.col("med_unit").median(), stack_conv=pl.lit(None, pl.Float64))
+    ref = mk.group_by("item").agg(ref_unit=pl.col("med_unit").median())
     own = (tr.filter(pl.col("n0") > 0, pl.col("buyout") > 0)
            .group_by("t0", "seller", "item")
            .agg(own_n0=pl.col("n0").sum(), own_min0=(pl.col("buyout") / pl.col("count")).min()))
@@ -79,7 +79,7 @@ def posts_for(faction):
                  bid_ratio=pl.when(pl.col("buyout") > 0).then(pl.col("minbid") / pl.col("buyout")),
                  undercut=pl.col("unit") < pl.col("min_unit"),
              ))
-    return posts.drop("stack_conv").collect()
+    return posts.collect()
 
 
 def seller_features(posts, items):
@@ -185,7 +185,7 @@ def main():
 
     types = (df.group_by("faction", "type", "itype")
              .agg(posts=pl.col("new").sum(), sellers=pl.col("seller").n_unique(),
-                  bid_only_share=pl.lit(None, pl.Float64), tl4_share=pl.col("n1_tl4").sum() / pl.col("new").sum(),
+                  tl4_share=pl.col("n1_tl4").sum() / pl.col("new").sum(),
                   med_bid_ratio=pl.col("bid_ratio").median(), med_ratio_min=pl.col("ratio_min").median(),
                   undercut_share=pl.col("undercut").mean())
              .join(df.group_by("faction").agg(snaps=pl.col("t1").n_unique()), on="faction")
