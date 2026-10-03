@@ -93,7 +93,7 @@ def mb_of(cheapest, ref):
 
 
 def run(market_path, faction_name, window, scale, n_bots, days, burn_in, demand_scale, supply_scale, seed, tag,
-        offsets=None, agent=None, write=True):
+        offsets=None, agent=None, write=True, empty_start=False):
     t0 = time.time()
     rng = np.random.default_rng(seed)
     faction = {v: k for k, v in FACTION_NAMES.items()}[faction_name]
@@ -146,6 +146,8 @@ def run(market_path, faction_name, window, scale, n_bots, days, burn_in, demand_
     warm = (pl.read_parquet(OUT / "auctions" / name / f"{warm_t}.parquet")
             .filter(pl.col("item").is_in(items.tolist()), pl.col("buyout") > 0))
     warm = warm.filter(pl.Series(rng.random(warm.height) < scale))
+    if empty_start:  # as a fresh realm does (and the C++ parity run)
+        warm = warm.head(0)
     owners = {s: n_bots + k for k, s in enumerate(warm["seller"].unique().to_list())}
     lo = warm["tleft"].replace_strict(TLEFT_MIN_HOURS, default=0.0, return_dtype=pl.Float64).to_numpy()
     hi = warm["tleft"].replace_strict(TLEFT_MAX_HOURS, default=48.0, return_dtype=pl.Float64).to_numpy()
@@ -340,10 +342,11 @@ def main():
     ap.add_argument("--supply-scale", type=float, default=None)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tag", default=None)
+    ap.add_argument("--empty-start", action="store_true", help="start from an empty house, like a fresh realm")
     args = ap.parse_args()
     tag = args.tag or f"{args.faction}_{args.window}_s{args.scale:g}_{Path(args.market).stem}"
     r = run(args.market, args.faction, args.window, args.scale, args.bots, args.days, args.burn_in,
-            args.demand_scale, args.supply_scale, args.seed, tag)
+            args.demand_scale, args.supply_scale, args.seed, tag, empty_start=args.empty_start)
     print(json.dumps({k: v for k, v in r.items()}, indent=1))
 
 
