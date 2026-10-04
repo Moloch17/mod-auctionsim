@@ -85,8 +85,7 @@ int main(int argc, char** argv)
         std::vector<uint32> owners;
         for (uint32 b = 0; b < bots; ++b)
             owners.push_back(b);
-        Market::PriceMemory memory;
-        memory.Reserve(fac.basket.size());
+        Market::PriceMemory memory;  // unused while Market::kMemoryWeight is 0
         Market::Rng rng(houseId);
         std::vector<Market::Listing> live;
         std::vector<Market::PostOrder> orders;

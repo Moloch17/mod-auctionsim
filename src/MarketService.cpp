@@ -107,7 +107,10 @@ MarketService::MarketService(
     // At most one entry per (seller, item) that posts: the basket size bounds it.
     for (size_t faction = 0; faction < Market::kFactions; ++faction)
     {
-        _memories[faction].Reserve(_data.factions[faction].basket.size());
+        if (Market::kMemoryWeight > 0.0)  // off in schema 1: no capacity held
+        {
+            _memories[faction].Reserve(_data.factions[faction].basket.size());
+        }
     }
 }
 
@@ -384,7 +387,7 @@ void MarketService::StepHouse(size_t faction)
     }
     uint64 const nowClock = static_cast<uint64>(GameTime::GetGameTime().count());
     Market::PriceMemory& memory = _memories[faction];
-    if (nowClock >= _memoryPrunedAt[faction] + kMemoryPruneSeconds)
+    if (Market::kMemoryWeight > 0.0 && nowClock >= _memoryPrunedAt[faction] + kMemoryPruneSeconds)
     {
         size_t dropped = memory.Prune(nowClock);
         _memoryPrunedAt[faction] = nowClock;

@@ -48,14 +48,18 @@ namespace Market
         uint32 expireAt = 0;  // unix seconds; 0 = now + hours (a fill sets it to the survivor's expiry)
     };
 
-    // MARKET_FORMAT.md's price memory: a post blends its fresh draw with the price the
-    // same seller last posted the item at (kMemoryWeight on the remembered one).
+    // MARKET_FORMAT.md's price memory: a post can blend its fresh draw with the price
+    // the same seller last posted the item at (`weight` on the remembered one).
+    // kMemoryWeight = 0 in schema 1: memory is OFF (any memory flattened the market
+    // against Lordaeron; the 0.05-0.95 draw trim alone gives real same-seller spread).
+    // At weight 0 nothing touches a memory: no lookups, no own-listing fallback, no
+    // writes, no pruning, no reserved capacity. Raise the constant to turn it back on.
     constexpr uint32 kMemorySeconds = 72 * 3600;
-    constexpr double kMemoryWeight = 0.75;
+    constexpr double kMemoryWeight = 0.0;
 
-    // exp(kMemoryWeight * ln remembered + (1 - kMemoryWeight) * ln fresh); `fresh` when
-    // nothing is remembered (remembered <= 0).
-    double BlendWithMemory(double fresh, double remembered);
+    // exp(weight * ln remembered + (1 - weight) * ln fresh); `fresh` when nothing is
+    // remembered (remembered <= 0) or the weight is 0.
+    double BlendWithMemory(double fresh, double remembered, double weight);
 
     // Per house, (seller owner id, item index) -> that seller's last posted per-unit
     // price and when. One hash map with reserved capacity; only pairs that post get an
@@ -111,9 +115,15 @@ namespace Market
             Rng& rng,
             std::vector<PostOrder>& out) const;
 
-        // One post's per-unit price: the POLICY draw, blended with what `owner`
-        // remembers (memory, else its cheapest own listing of the item up), then the
-        // vendor and CRAFT floors; stored back into `memory`. Exposed for the self-tests.
+        // Price memory weight for this engine's posts (default kMemoryWeight, i.e. off).
+        // The self-tests set it to exercise the mechanism.
+        void SetMemoryWeight(double weight) { _memoryWeight = weight; }
+        double MemoryWeight() const { return _memoryWeight; }
+
+        // One post's per-unit price: the POLICY draw -- with a memory weight above 0,
+        // blended with what `owner` remembers (memory, else its cheapest own listing of
+        // the item up) -- then the vendor and CRAFT floors; with a weight above 0 the
+        // result is stored back into `memory`. Exposed for the self-tests.
         uint32 DrawUnitPrice(
             Faction const& fac, BasketRow const& row, uint32 owner, PriceMemory& memory, uint64 now, Rng& rng) const;
         // What `owner` remembers for the item: memory younger than kMemorySeconds, else
@@ -132,6 +142,7 @@ namespace Market
         size_t ItemCount() const { return _state.size(); }
 
     private:
+        double _memoryWeight = kMemoryWeight;
         std::vector<Listing> _listings;
         std::vector<ItemState> _state;
         std::vector<uint32> _owners;  // scratch: one item's owners, for the distinct count

@@ -1674,9 +1674,12 @@ namespace
         }
 
         // Blending: 0.75 on the remembered price, in log space.
-        if (Market::BlendWithMemory(100.0, 0.0) != 100.0 ||
-            std::fabs(Market::BlendWithMemory(16.0, 256.0) - 128.0) > 1e-6 ||
-            std::fabs(Market::BlendWithMemory(100.0, 100.0) - 100.0) > 1e-9)
+        // The shipped weight is 0 (memory off); the mechanism is exercised at 0.75.
+        double const weight = 0.75;
+        if (Market::BlendWithMemory(100.0, 0.0, weight) != 100.0 ||
+            std::fabs(Market::BlendWithMemory(16.0, 256.0, weight) - 128.0) > 1e-6 ||
+            std::fabs(Market::BlendWithMemory(100.0, 100.0, weight) - 100.0) > 1e-9 ||
+            Market::BlendWithMemory(16.0, 256.0, 0.0) != 16.0)
         {
             return Fail(name, "BlendWithMemory math wrong");
         }
@@ -1711,6 +1714,25 @@ namespace
         Market::PriceMemory memory;
         uint64 const t0 = 1783296000ULL;
 
+        // Shipped (weight 0, memory off): a post's price is the fresh draw after the
+        // floors, whatever is remembered or up, and nothing is written to the memory.
+        if (engine.MemoryWeight() != Market::kMemoryWeight || Market::kMemoryWeight != 0.0)
+        {
+            return Fail(name, "the shipped engine's memory weight isn't 0");
+        }
+        {
+            Market::PriceMemory off;
+            off.Store(5, potion, 40, t0);
+            uint32 linenOff = engine.DrawUnitPrice(fac, linenRow, 7, off, t0, rng);
+            uint32 potionOff = engine.DrawUnitPrice(fac, potionRow, 5, off, t0 + 60, rng);
+            if (linenOff != 50 || potionOff != 80 || off.Size() != 1 || off.Recent(5, potion, t0 + 60) != 40)
+            {
+                return Fail(name, Acore::StringFormat(
+                    "weight 0: linen {} potion {} (want 50 / 80), memory {} entries", linenOff, potionOff, off.Size()));
+            }
+        }
+        engine.SetMemoryWeight(0.75);
+
         // The own-listing fallback: owner 7's cheapest own linen is 70; owner 8 has none.
         if (engine.RememberedPrice(linen, 7, memory, t0) != 70 || engine.RememberedPrice(linen, 8, memory, t0) != 0)
         {
@@ -1719,7 +1741,7 @@ namespace
 
         // Linen's fresh draw is the cheapest (50, zero quantiles): owner 7 blends with 70.
         auto expect = [](double fresh, double remembered) {
-            return static_cast<uint32>(std::floor(Market::BlendWithMemory(fresh, remembered) + 0.5));
+            return static_cast<uint32>(std::floor(Market::BlendWithMemory(fresh, remembered, 0.75) + 0.5));
         };
         uint32 first = engine.DrawUnitPrice(fac, linenRow, 7, memory, t0, rng);
         uint32 second = engine.DrawUnitPrice(fac, linenRow, 7, memory, t0 + 3600, rng);

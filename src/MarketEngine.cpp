@@ -73,13 +73,13 @@ namespace Market
         return static_cast<double>(item.craftMargin) * sum;
     }
 
-    double BlendWithMemory(double fresh, double remembered)
+    double BlendWithMemory(double fresh, double remembered, double weight)
     {
-        if (!(remembered > 0.0) || !(fresh > 0.0))
+        if (!(weight > 0.0) || !(remembered > 0.0) || !(fresh > 0.0))
         {
             return fresh;
         }
-        return std::exp(kMemoryWeight * std::log(remembered) + (1.0 - kMemoryWeight) * std::log(fresh));
+        return std::exp(weight * std::log(remembered) + (1.0 - weight) * std::log(fresh));
     }
 
     uint32 PriceMemory::Recent(uint32 owner, uint32 itemIdx, uint64 now) const
@@ -155,10 +155,18 @@ namespace Market
         {
             unit *= std::exp(QuantileDraw(policy->q, DrawU(rng.Uniform())) + static_cast<double>(policy->offset));
         }
-        unit = BlendWithMemory(unit, static_cast<double>(RememberedPrice(row.itemIdx, owner, memory, now)));
+        bool const remembers = _memoryWeight > 0.0;
+        if (remembers)
+        {
+            double const remembered = static_cast<double>(RememberedPrice(row.itemIdx, owner, memory, now));
+            unit = BlendWithMemory(unit, remembered, _memoryWeight);
+        }
         unit = std::max({unit, static_cast<double>(item.vendor), CraftFloor(fac, item)});
         uint32 const price = RoundPrice(unit);
-        memory.Store(owner, row.itemIdx, price, now);
+        if (remembers)
+        {
+            memory.Store(owner, row.itemIdx, price, now);
+        }
         return price;
     }
 
@@ -296,7 +304,10 @@ namespace Market
         _slotOwners = slotOwners;
         // An empty memory: the own-listing fallback starts it from the sellers' listings up.
         _memory.Clear();
-        _memory.Reserve(fac.basket.size());
+        if (_engine.MemoryWeight() > 0.0)
+        {
+            _memory.Reserve(fac.basket.size());
+        }
         _weekdays = weekdays;
         _scale = scale;
         _dtHours = dtHours;
