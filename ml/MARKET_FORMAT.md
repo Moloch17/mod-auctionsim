@@ -80,8 +80,10 @@ Lookup `(type, class)`, then `(type, -1)`, then `(-1, -1)`. count = clamp(round(
 
 ### CRAFT — crafted items' reagents
 `faction:item:reagent:qty:margin`
-A crafted item's posting price is also never below `margin` × Σ(qty × reagent price), reagent price = cheapest of
-that reagent up, else its `ref`. `margin` repeats on each of the item's rows.
+A crafted item's posting price is also never below `margin` × Σ(qty × reagent price), reagent price = the lower of
+the cheapest of that reagent up and its `ref` (its `ref` when none is up), and this floor is capped at CEILING × the
+item's `ref` (see Reference anchor). Valuing reagents above their reference let recipe cycles (Eternal <->
+Crystallized, essences) ratchet each other's floors up without limit. `margin` repeats on each of the item's rows.
 
 ### BOT — the named sellers, 1 row per bot
 `faction:bot:name:type` (`type` is the type the name was picked from; postings use BASKET's `type`)
@@ -103,12 +105,26 @@ Every step of `dt` hours (module: its 30-minute timer, dt = 0.5), per faction ho
 1. **Posts.** For each basket row, events ~ Poisson(rateH × supplyScale × Market.Scale × dt), posted as bot
    `bot mod N` (so the market's volume doesn't depend on N). For each event: count listings, draw stack from
    `STACK` and price from `POLICY` with the row's `type`, using the house's current state for the item (all owners,
-   players included), then apply **price memory** (below), then floor at `vendor` and the `CRAFT` floor; duration
-   from `tl4`. Deposit as the core charges it.
+   players included) under the **reference anchor** (below), then **price memory** (below, off), then floor at
+   `vendor` and the `CRAFT` floor; duration from `tl4`. Deposit as the core charges it.
 2. **Buyers.** For each item, arrivals ~ Poisson(buyersH × demandScale × Market.Scale × weekday × dt). Each draws a
    reservation and buys the cheapest listing with buyout ≤ reservation, whole, whoever owns it (players' listings
    included: that is how players sell to the market); none → it leaves.
 3. Expiry is the core's.
+
+### Reference anchor
+
+Sellers price against the cheapest listing up, so on a thin item an overpriced listing that never sells became the
+next "cheapest" and prices ratcheted up without limit (in a simulated year 1-2% of items went to absurd prices). So:
+
+- a cheapest listing above ANCHOR = 3 × the item's `ref` is ignored: the post is drawn with `mb = -1` and priced
+  from `ref`, exactly as when nothing is up;
+- the drawn price (after `offset`) is capped at CEILING = 10 × `ref`; the `CRAFT` floor is capped the same way; the
+  `vendor` floor is never capped (it is the true minimum and is always far below the ceiling).
+
+Chosen by testing anchor 1.5/2/3 x ceiling 5/10 against Lordaeron: the anchor level barely changes the market (prices
+rarely sit above 1.5x once nothing runs away), 3 keeps a seller's same-item listings closest to real sellers'
+consistency, and a 10x ceiling matches the real spread of cheapest/reference best.
 
 ### Price memory (off)
 

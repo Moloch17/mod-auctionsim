@@ -50,6 +50,11 @@ MEMORY_WEIGHT = float(_os.environ.get("ML_MEMORY_WEIGHT", MEMORY_WEIGHT))
 MEMORY_BAND = float(_os.environ.get("ML_MEMORY_BAND", "0"))
 DRAW_LO = float(_os.environ.get("ML_DRAW_LO", DRAW_LO))
 DRAW_HI = float(_os.environ.get("ML_DRAW_HI", DRAW_HI))
+# Reference anchor: a cheapest listing above ANCHOR x reference is ignored -- the post is priced from the reference,
+# as when nothing is up -- and no post or crafting floor goes above CEILING x reference. 0 = off (ML_ANCHOR /
+# ML_CEILING override for experiments). Without them a thin item's price ratcheted up without limit.
+ANCHOR = float(_os.environ.get("ML_ANCHOR", "3"))    # MARKET_FORMAT.md "Reference anchor"
+CEILING = float(_os.environ.get("ML_CEILING", "10"))
 CUT, DEPOSIT_PER_12H, MIN_DEPOSIT = 0.05, 0.15, 100
 TLEFT_MIN_HOURS = {1: 0.0, 2: 0.5, 3: 2.0, 4: 12.0}
 SNAPSHOT_HOUR, LIQUID_UNITS = 20, 20
@@ -218,10 +223,15 @@ def run(market_path, faction_name, window, scale, n_bots, days, burn_in, demand_
             i, t, c = b_item[j], b_type[j], cls[b_item[j]]
             for _ in range(ev[j]):
                 n = 1 + rng.poisson(max(b_batch[j] - 1, 0))
-                q, off = policy(t, c, ub_of(units[i]), sb_of(sellers[i]), mb_of(cheapest[i], ref[i]))
+                cheap = cheapest[i]
+                if ANCHOR > 0 and math.isfinite(cheap) and cheap > ANCHOR * ref[i]:
+                    cheap = math.inf  # an absurd cheapest is ignored: price from the reference
+                q, off = policy(t, c, ub_of(units[i]), sb_of(sellers[i]), mb_of(cheap, ref[i]))
                 off += offsets.get(t, 0.0)
-                base = cheapest[i] if math.isfinite(cheapest[i]) else ref[i]
+                base = cheap if math.isfinite(cheap) else ref[i]
                 price = base * math.exp(draw(q) + off)
+                if CEILING > 0:
+                    price = min(price, CEILING * ref[i])
                 bot = int(b_owner[j])
                 prior = remembered(bot, int(i))
                 if prior and MEMORY_BAND > 1:
@@ -230,9 +240,17 @@ def run(market_path, faction_name, window, scale, n_bots, days, burn_in, demand_
                     price = math.exp(MEMORY_WEIGHT * math.log(prior) + (1 - MEMORY_WEIGHT) * math.log(price))
                 floor = vendor[i]
                 if i in craft:
-                    cost = sum(qty * (cheapest[r] if r is not None and math.isfinite(cheapest[r]) else
-                                      (ref[r] if r is not None else 0)) for r, qty, _ in craft[i])
-                    floor = max(floor, craft[i][0][2] * cost)
+                    if ANCHOR > 0:
+                        # Reagents valued at no more than their reference: recipe cycles (Eternal <-> Crystallized,
+                        # essences) otherwise ratchet each other's floors up without limit.
+                        cost = sum(qty * (min(cheapest[r], ref[r]) if r is not None else 0) for r, qty, _ in craft[i])
+                    else:
+                        cost = sum(qty * (cheapest[r] if r is not None and math.isfinite(cheapest[r]) else
+                                          (ref[r] if r is not None else 0)) for r, qty, _ in craft[i])
+                    craft_floor = craft[i][0][2] * cost
+                    if CEILING > 0:
+                        craft_floor = min(craft_floor, CEILING * ref[i])
+                    floor = max(floor, craft_floor)
                 tot["floored"] += n * (price < floor)
                 price = max(price, floor)
                 memory[(bot, int(i))] = (float(round(price)), now)  # whole copper, as the module stores it
