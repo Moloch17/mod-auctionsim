@@ -110,7 +110,8 @@ Every step of `dt` hours (module: its 30-minute timer, dt = 0.5), per faction ho
 2. **Buyers.** For each item, arrivals ~ Poisson(buyersH × demandScale × Market.Scale × weekday × dt). Each draws a
    reservation and buys the cheapest listing with buyout ≤ reservation, whole, whoever owns it (players' listings
    included: that is how players sell to the market); none → it leaves.
-3. Expiry is the core's.
+3. **Player buyer** (below), for players' listings only.
+4. Expiry is the core's.
 
 ### Reference anchor
 
@@ -141,3 +142,33 @@ band) made the bots more consistent than real sellers and flattened the market (
 cheapest/median spread gone). Trimming the draws to the 5th-95th percentile alone brings a bot's same-item listings
 into the real range at Market.Scale 0.1 (5% of seller-item groups more than 1.5x apart, 2% more than 3x; real
 sellers 3-6% and 1-3%). The mechanism stays specified so it can be turned on if later data says sellers are stickier.
+
+### Player buyer
+
+On a small realm an item's ordinary buyers come rarely, so a player's market-priced listing could wait weeks. The
+player buyer gives every player listing its own chance to sell, set by the realm's settings rather than by
+Market.Scale. Runtime only; nothing in the file. Each step, per house, for every **player** listing (owner neither a
+market seller nor the buyer bot) of an item with an `ITEM` row and `ref > 0`, that is buyable (a buyout, not already
+queued, and within the vendor guard: never above the vendor's buy price for an item vendors sell):
+
+- **Never greys:** item quality 0 is never bought.
+- **Market price** `m` = the lower of `ref` and the cheapest market-seller listing of the item up (per unit). A
+  player buying a seller's copy and relisting it is never paid more than that copy cost, and loses the AH cut.
+- **Base rate** `h0 = -ln(0.05) / PlayerSellHours` per hour: at full liquidity 95% of listings at `m` sell within
+  PlayerSellHours.
+- **Liquidity** `L = min(1, (b / LIQUID_BUYERS_H)^PlayerLiquidity)` with LIQUID_BUYERS_H = 0.5 and `b` = the item's
+  `buyersH` (Lordaeron's rate, not scaled), multiplied by the quality factor when PlayerQualityBonus is on:
+
+  | quality | 0 grey | 1 white | 2 green | 3 blue | 4 epic | 5+ legendary and up |
+  |---|---|---|---|---|---|---|
+  | factor | never bought | 1 | 1.5 | 2.5 | 4 | 4 |
+
+- **Price** `F = 1` when the unit price is at or below `m`; above it `F = w(r) / w(1)` with `r = price / m` and `w`
+  the item class's `CURVE` (interpolated as for reservations), so overpricing sells more slowly and ~never at 3x+.
+- The listing is bought this step with probability `1 - exp(-h0 * L * F * dt)`, whole, through the buy queue.
+- **Gold limit:** with PlayerGoldPerDay > 0, a purchase is skipped when it would take what the player buyer has paid
+  that character over the last 24 hours above PlayerGoldPerDay gold. 0 = no limit.
+
+Settings: `AuctionSim.Market.PlayerSellHours` (24; 0 = off), `AuctionSim.Market.PlayerLiquidity` (0.5),
+`AuctionSim.Market.PlayerQualityBonus` (0/1, default 0), `AuctionSim.Market.PlayerGoldPerDay` (0 = no limit).
+
