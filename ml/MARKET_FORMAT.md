@@ -110,35 +110,18 @@ Every step of `dt` hours (module: its 30-minute timer, dt = 0.5), per faction ho
    included: that is how players sell to the market); none → it leaves.
 3. Expiry is the core's.
 
-### Price memory
+### Price memory (off)
 
-Real sellers price an item about where they priced it last; independent draws per post made one bot list the same
-item at 1.7g and 21.7g. Each house keeps, per (posting bot, item), the per-unit price of that bot's last post of it and
-when it was made. For a post with fresh draw `p` (after `POLICY`, before the floors):
+Each house can keep, per (posting bot, item), the per-unit price of that bot's last post of it. For a post with fresh
+draw `p` (after `POLICY`, before the floors):
 
 - remembered price `m`: the memory if it is younger than MEMORY_HOURS = 72; otherwise the bot's cheapest own
-  listing of the item up on the house (survives restarts and fills); otherwise none;
-- price = `p` when there is no `m`, else `exp(MEMORY_WEIGHT * ln m + (1 - MEMORY_WEIGHT) * ln p)` with
-  MEMORY_WEIGHT = 0.75 -- consistent, yet it follows the market a quarter of the way per post;
-- then the vendor and `CRAFT` floors; the memory stores the final price and the step's time.
+  listing of the item up on the house; otherwise none;
+- price = `p` when there is no `m` or MEMORY_WEIGHT = 0, else `exp(MEMORY_WEIGHT * ln m + (1 - MEMORY_WEIGHT) * ln p)`;
+- then the vendor and `CRAFT` floors; the memory stores the final price (whole copper) and the step's time.
 
-The memory is runtime state, not in the file; it is lost on restart (the own-listing fallback covers that). A fill's
-simulation keeps its own memory, starting from the sellers' listings already up.
-
-## Fill (immediate full population)
-
-To put a house in the state it would be in had the bots been running all along, without waiting 1-2 days:
-
-1. Take the house as it is now. Players' listings and the bots' own existing listings stay as they are and act as
-   competitors (cheapest, units up, owners) but are never bought during the fill.
-2. Run the runtime above over the FILL_HOURS = 48 simulated hours before now (the longest auction duration, so the
-   result is steady state), on virtual bot listings only: posts at their simulated times, expiry, and buyers buying
-   only virtual listings. Weekday follows the simulated clock.
-3. The virtual listings still up at the end are what the bots would have up now, each with its remaining time.
-   Their total S is the house's steady state; the bots already have E listings up. Add at most S - E (nothing if
-   E >= S): per item, the excess of survivors over what the bots already have up, taken item by item in random
-   order until S - E listings are chosen, and create those as real auctions with their remaining time. Items
-   average ~4 listings, so a per-item subtraction alone would add about half a house to a full one; the house
-   total keeps a fill on a full house to almost nothing while an empty house still gets all S.
-
-A fill is a one-off top-up; the normal steps continue afterwards.
+**MEMORY_WEIGHT = 0 in schema 1: memory is off.** Tested against Lordaeron, any memory (blend 0.5-0.75, or a 1.5x
+band) made the bots more consistent than real sellers and flattened the market (volatility far below real, the
+cheapest/median spread gone). Trimming the draws to the 5th-95th percentile alone brings a bot's same-item listings
+into the real range at Market.Scale 0.1 (5% of seller-item groups more than 1.5x apart, 2% more than 3x; real
+sellers 3-6% and 1-3%). The mechanism stays specified so it can be turned on if later data says sellers are stickier.

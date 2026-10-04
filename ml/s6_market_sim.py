@@ -42,7 +42,14 @@ MB_EDGES = [-1.0, -0.5, -0.25, -0.1, 0.0, 0.1, 0.25, 0.5, 1.0]
 QP = np.array([0.02, 0.10, 0.25, 0.50, 0.75, 0.90, 0.98])
 # MARKET_FORMAT.md: draws stay inside the 5th-95th percentile; price memory per (bot, item).
 DRAW_LO, DRAW_HI = 0.05, 0.95
-MEMORY_WEIGHT, MEMORY_HOURS = 0.75, 72.0
+MEMORY_WEIGHT, MEMORY_HOURS = 0.0, 72.0  # memory is off in schema 1 (MARKET_FORMAT.md, "Price memory (off)")
+# Experiment overrides (not part of the contract until chosen): ML_MEMORY_WEIGHT, ML_MEMORY_BAND (clamp the fresh
+# price into [m / band, m * band] instead of blending when set), ML_DRAW_LO/HI.
+import os as _os
+MEMORY_WEIGHT = float(_os.environ.get("ML_MEMORY_WEIGHT", MEMORY_WEIGHT))
+MEMORY_BAND = float(_os.environ.get("ML_MEMORY_BAND", "0"))
+DRAW_LO = float(_os.environ.get("ML_DRAW_LO", DRAW_LO))
+DRAW_HI = float(_os.environ.get("ML_DRAW_HI", DRAW_HI))
 CUT, DEPOSIT_PER_12H, MIN_DEPOSIT = 0.05, 0.15, 100
 TLEFT_MIN_HOURS = {1: 0.0, 2: 0.5, 3: 2.0, 4: 12.0}
 SNAPSHOT_HOUR, LIQUID_UNITS = 20, 20
@@ -197,7 +204,7 @@ def run(market_path, faction_name, window, scale, n_bots, days, burn_in, demand_
 
         def remembered(bot, item):
             hit = memory.get((bot, item))
-            if hit and now - hit[1] <= MEMORY_HOURS:
+            if hit and now - hit[1] < MEMORY_HOURS:
                 return hit[0]
             k = np.searchsorted(own_uniq, bot * n_items + item)
             if k < len(own_uniq) and own_uniq[k] == bot * n_items + item:
@@ -217,7 +224,9 @@ def run(market_path, faction_name, window, scale, n_bots, days, burn_in, demand_
                 price = base * math.exp(draw(q) + off)
                 bot = int(b_owner[j])
                 prior = remembered(bot, int(i))
-                if prior:
+                if prior and MEMORY_BAND > 1:
+                    price = min(max(price, prior / MEMORY_BAND), prior * MEMORY_BAND)
+                elif prior and MEMORY_WEIGHT > 0:
                     price = math.exp(MEMORY_WEIGHT * math.log(prior) + (1 - MEMORY_WEIGHT) * math.log(price))
                 floor = vendor[i]
                 if i in craft:
@@ -226,7 +235,7 @@ def run(market_path, faction_name, window, scale, n_bots, days, burn_in, demand_
                     floor = max(floor, craft[i][0][2] * cost)
                 tot["floored"] += n * (price < floor)
                 price = max(price, floor)
-                memory[(bot, int(i))] = (price, now)
+                memory[(bot, int(i))] = (float(round(price)), now)  # whole copper, as the module stores it
                 count = min(max(round(conv[i] * math.exp(draw(stack_q(t, c)))), 1), maxc[i])
                 dur = (24.0 if rng.random() < 0.5 else 48.0) if rng.random() < b_tl4[j] else 12.0
                 dep = max(MIN_DEPOSIT, DEPOSIT_PER_12H * vendor[i] * count * dur / 12)
