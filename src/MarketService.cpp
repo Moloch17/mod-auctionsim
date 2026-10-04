@@ -7,6 +7,7 @@
 #include "ASConfig.h"
 #include "AuctionBuyingService.h"
 #include "AuctionPricing.h"
+#include "CraftedItems.h"
 #include "DatabaseEnv.h"
 #include "GameTime.h"
 #include "Item.h"
@@ -472,6 +473,7 @@ uint32 MarketService::CreateListings(
             continue;
         }
         item->SetOwnerGUID(owner);
+        CraftedItems::SignIfCrafted(item, owner);  // "<Made by seller>", as a player's craft
         uint32 const count = item->GetCount();
         uint32 const buyout = static_cast<uint32>(std::min<uint64>(uint64(order.unitPrice) * count, kMaxBuyout));
 

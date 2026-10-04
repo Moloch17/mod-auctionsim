@@ -14,6 +14,8 @@
 #include "AuctionPricing.h"
 #include "Bot.h"
 #include "CharacterCache.h"
+#include "CraftedItems.h"
+#include "Item.h"
 #include "MarketBots.h"
 #include "MarketData.h"
 #include "MarketEngine.h"
@@ -2051,6 +2053,43 @@ namespace
         return ok ? Pass("Market fill", detail) : Fail("Market fill", detail);
     }
 
+    // Profession crafts the module lists carry the listing character as their maker, as a
+    // player's would: only items a profession makes, and only those whose template takes
+    // a signature (Saronite Bar is crafted but stacks, so it never shows a maker).
+    TestResult TestCraftedItemSignature()
+    {
+        std::string const name = "Crafted item signature";
+        CraftedItems::Load();
+        uint32 const bag = 41599;     // Frostweave Bag: tailoring, stack of 1
+        uint32 const bar = 36913;     // Saronite Bar: smelting, stacks of 20
+        uint32 const stone = 6948;    // Hearthstone: no profession makes it
+        if (!CraftedItems::IsCrafted(bag) || !CraftedItems::IsCrafted(bar) || CraftedItems::IsCrafted(stone))
+        {
+            return Fail(name, Acore::StringFormat("crafted? bag {} bar {} hearthstone {}", CraftedItems::IsCrafted(bag),
+                                                  CraftedItems::IsCrafted(bar), CraftedItems::IsCrafted(stone)));
+        }
+        ObjectGuid const maker = ObjectGuid::Create<HighGuid::Player>(1);
+        std::string problem;
+        for (auto [itemId, signed_] : {std::pair{bag, true}, std::pair{bar, false}, std::pair{stone, false}})
+        {
+            Item* item = Item::CreateItem(itemId, 1, nullptr);
+            if (!item)
+            {
+                problem = Acore::StringFormat("item {} could not be created", itemId);
+                break;
+            }
+            CraftedItems::SignIfCrafted(item, maker);
+            bool const hasMaker = item->GetGuidValue(ITEM_FIELD_CREATOR) == maker;
+            delete item;
+            if (hasMaker != signed_)
+            {
+                problem = Acore::StringFormat("item {} maker {} (expected {})", itemId, hasMaker, signed_);
+                break;
+            }
+        }
+        return problem.empty() ? Pass(name, "bag signed; bar and hearthstone not") : Fail(name, problem);
+    }
+
     TestResult TestMailSwallowing()
     {
         std::string const name = "Mail to module characters";
@@ -2537,6 +2576,7 @@ namespace AuctionSimTests
             TestMarketFill(),
             TestMarketPurgePlan(),
             TestMailSwallowing(),
+            TestCraftedItemSignature(),
         };
         if (loaded)
         {

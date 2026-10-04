@@ -13,6 +13,7 @@
 #include "AuctionPricing.h"
 #include "Bot.h"
 #include "Config.h"
+#include "CraftedItems.h"
 #include "DatabaseEnvFwd.h"
 #include "Define.h"
 #include "Log.h"
@@ -140,6 +141,7 @@ void AuctionSim::OnStartup()
     }
 
     EvaluateConfigVersion();
+    CraftedItems::Load();
 
     // Load auctionsim.dat unconditionally: the addon shows/edits the listing table
     // whether or not the module is enabled.

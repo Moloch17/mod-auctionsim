@@ -5,6 +5,7 @@
 #include "ASConfig.h"
 #include "AuctionPricing.h"
 #include "Bot.h"
+#include "CraftedItems.h"
 #include "Item.h"
 #include "Log.h"
 #include "ObjectMgr.h"
@@ -199,6 +200,7 @@ AuctionEntry* AuctionListingService::ListOneItem(
     Item* item =
         Item::CreateItem(scan.GetItemID(), quantity, nullptr, false, static_cast<uint32>(scan.GetSuffixID()));
     item->SetOwnerGUID(_bot.GetPlayerRef().GetGUID());
+    CraftedItems::SignIfCrafted(item, _bot.GetPlayerRef().GetGUID());  // "<Made by bot>", as a player's craft
 
     AuctionEntry* auction = new AuctionEntry();
     auction->Id = sObjectMgr->GenerateAuctionID();
