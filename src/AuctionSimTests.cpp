@@ -1277,12 +1277,14 @@ namespace
     // Linen Cloth (2996, crafted from 2 Linen at margin 1.1) and Minor Healing Potion
     // (118, vendor price above its ref). Faction 6: Linen only. Quantiles are zero, so
     // prices and stacks are exact; offsets tell the POLICY fallback levels apart.
-    std::string MarketFixture(std::string const& extraBasket = "", int32 skipMb = -2)
+    std::string MarketFixture(
+        std::string const& extraBasket = "", int32 skipMb = -2, std::string const& extraPolicy = "")
     {
         std::string policy = FallbackPolicyRows(2, skipMb) + FallbackPolicyRows(6) +
                              "2:3:7:2:1:5:0:0:0:0:0:0:0:0.1\n"
                              "2:3:7:-1:-1:5:0:0:0:0:0:0:0:0.2\n"
-                             "2:3:-1:-1:-1:5:0:0:0:0:0:0:0:0.3\n";
+                             "2:3:-1:-1:-1:5:0:0:0:0:0:0:0:0.3\n" +
+                             extraPolicy;
         size_t policyRows = 0;
         for (char c : policy)
         {
@@ -1777,6 +1779,91 @@ namespace
                 potionMemory.Recent(5, potion, t0 + 60)));
         }
         return Pass(name, Acore::StringFormat("draws in [{:.3f}, {:.3f}]", seenLo, seenHi));
+    }
+
+    TestResult TestMarketReferenceAnchor()
+    {
+        std::string const name = "Market reference anchor";
+        Market::Data data;
+        std::string error;
+        // Potion (type 3, class 0) with nothing up draws offset 3: e^3 x ref ~ 20 x ref.
+        if (!ParseFixture(MarketFixture("", -2, "2:3:0:-1:-1:-1:0:0:0:0:0:0:0:3.0\n"), data, error))
+        {
+            return Fail(name, error);
+        }
+        Market::Faction& fac = data.factions[0];
+        uint32 const linen = static_cast<uint32>(fac.FindItem(2589));  // ref 120
+        uint32 const bolt = static_cast<uint32>(fac.FindItem(2996));    // ref 100, 2 linen x 1.1
+        uint32 const potion = static_cast<uint32>(fac.FindItem(118));   // ref 50, vendor 80
+        Market::BasketRow const& linenRow = fac.basket[0];
+        Market::BasketRow const& boltRow = fac.basket[1];
+        Market::BasketRow const& potionRow = fac.basket[2];
+        Market::PriceMemory memory;
+        Market::Rng rng(3);
+
+        Market::Engine engine;
+        auto houseWith = [&engine, &fac](uint32 item, uint32 perUnit) {
+            engine.Listings().clear();
+            Market::Listing listing;
+            listing.itemIdx = item;
+            listing.perUnit = perUnit;
+            listing.count = 20;
+            listing.owner = 1;
+            listing.flags = Market::Listing::kBuyable;
+            engine.Listings().push_back(listing);
+            engine.BuildState(fac.items.size());
+        };
+        auto price = [&](Market::BasketRow const& row) {
+            return engine.DrawUnitPrice(fac, row, 50, memory, 0, rng);
+        };
+
+        // Anchor: a cheapest at 2.9 x ref (348) is priced against; at 3.1 x (372) it is
+        // ignored and the post is drawn from ref (120) as if nothing were up.
+        houseWith(linen, 348);
+        uint32 const below = price(linenRow);
+        houseWith(linen, 372);
+        uint32 const above = price(linenRow);
+        if (below != 348 || above != 120)
+        {
+            return Fail(name, Acore::StringFormat("anchor: 2.9x gave {} (want 348), 3.1x gave {} (want 120)", below,
+                above));
+        }
+
+        // Ceiling: the potion's ~20 x ref draw is capped at 10 x ref.
+        houseWith(bolt, 100);
+        uint32 const capped = price(potionRow);
+        if (capped != 500)
+        {
+            return Fail(name, Acore::StringFormat("ceiling: potion {} (want 10 x 50 = 500)", capped));
+        }
+
+        // CRAFT floor: linen up at 300 (2.5 x ref) is valued at its ref, 120: 1.1 x 2 x 120.
+        houseWith(linen, 300);
+        uint32 const crafted = price(boltRow);
+        if (crafted != 264)
+        {
+            return Fail(name, Acore::StringFormat("craft floor: bolt {} (want 1.1 x 2 x 120 = 264)", crafted));
+        }
+
+        // CRAFT floor cap: margin 10 would floor at 2400; capped at 10 x ref = 1000.
+        fac.items[bolt].craftMargin = 10.0f;
+        uint32 const craftCapped = price(boltRow);
+        fac.items[bolt].craftMargin = 1.1f;
+        if (craftCapped != 1000)
+        {
+            return Fail(name, Acore::StringFormat("craft floor cap: bolt {} (want 1000)", craftCapped));
+        }
+
+        // A vendor price above the ceiling can't happen in real data, but the vendor floor
+        // is never capped: it wins.
+        fac.items[potion].vendor = 2000;
+        uint32 const vendorWins = price(potionRow);
+        fac.items[potion].vendor = 80;
+        if (vendorWins != 2000)
+        {
+            return Fail(name, Acore::StringFormat("vendor above ceiling: potion {} (want 2000)", vendorWins));
+        }
+        return Pass(name);
     }
 
     TestResult TestMarketScaleMath()
@@ -2802,6 +2889,7 @@ namespace AuctionSimTests
             TestMarketBins(),
             TestMarketQuantileDraw(),
             TestMarketPriceMemory(),
+            TestMarketReferenceAnchor(),
             TestMarketReservationBounds(),
             TestMarketScaleMath(),
             TestMarketPricingAndBuyers(),

@@ -65,12 +65,16 @@ namespace Market
         {
             Reagent const& reagent = fac.craft[r];
             ItemState const& state = _state[reagent.itemIdx];
-            double price = state.cheapest != Listing::kNoBuyout
-                ? static_cast<double>(state.cheapest)
-                : static_cast<double>(fac.items[reagent.itemIdx].ref);
+            // A reagent is worth at most its reference: valuing reagents above it let
+            // recipe cycles ratchet each other's floors up without limit.
+            double price = static_cast<double>(fac.items[reagent.itemIdx].ref);
+            if (state.cheapest != Listing::kNoBuyout)
+            {
+                price = std::min(price, static_cast<double>(state.cheapest));
+            }
             sum += static_cast<double>(reagent.qty) * price;
         }
-        return static_cast<double>(item.craftMargin) * sum;
+        return std::min(static_cast<double>(item.craftMargin) * sum, kCeiling * static_cast<double>(item.ref));
     }
 
     double BlendWithMemory(double fresh, double remembered, double weight)
@@ -143,9 +147,10 @@ namespace Market
     {
         Item const& item = fac.items[row.itemIdx];
         ItemState const& state = _state[row.itemIdx];
-        bool const hasCheapest = state.cheapest != Listing::kNoBuyout;
         double const cheapest = static_cast<double>(state.cheapest);
         double const ref = static_cast<double>(item.ref);
+        // Reference anchor: a cheapest above kAnchor x ref counts as nothing up.
+        bool const hasCheapest = state.cheapest != Listing::kNoBuyout && cheapest <= kAnchor * ref;
         int32 const mb = CheapestBin(hasCheapest, cheapest, ref);
 
         PolicyRow const* policy = fac.FindPolicy(
@@ -155,12 +160,14 @@ namespace Market
         {
             unit *= std::exp(QuantileDraw(policy->q, DrawU(rng.Uniform())) + static_cast<double>(policy->offset));
         }
+        unit = std::min(unit, kCeiling * ref);
         bool const remembers = _memoryWeight > 0.0;
         if (remembers)
         {
             double const remembered = static_cast<double>(RememberedPrice(row.itemIdx, owner, memory, now));
             unit = BlendWithMemory(unit, remembered, _memoryWeight);
         }
+        // The vendor floor is never capped; the CRAFT floor is (in CraftFloor).
         unit = std::max({unit, static_cast<double>(item.vendor), CraftFloor(fac, item)});
         uint32 const price = RoundPrice(unit);
         if (remembers)

@@ -6,7 +6,7 @@
 // Module <-> addon protocol/release version. Must match ahsim.toc "## Version".
 // The module and addon ship as a pair; a GM is warned (chat at login + addon
 // window) on any mismatch, and the lower version is named as out of date.
-#define AUCTIONSIM_VERSION "1.7.2"
+#define AUCTIONSIM_VERSION "1.7.3"
 
 // Config schema version. Bump whenever conf/auctionsim.conf.dist adds, removes or
 // renames a key. Stamped into the .dist as "AuctionSim.ConfigVersion"; a GM whose

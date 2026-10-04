@@ -54,6 +54,12 @@ namespace Market
     // real overpricers and typos, and drawn they would put walls of 10x listings up.
     constexpr double kDrawLo = 0.05;
     constexpr double kDrawHi = 0.95;
+    // Reference anchor: a cheapest listing above kAnchor x ref is ignored (the post is
+    // drawn as if nothing were up, from ref); a drawn price and the CRAFT floor are
+    // capped at kCeiling x ref. Stops thin items and recipe cycles ratcheting upward.
+    constexpr double kAnchor = 3.0;
+    constexpr double kCeiling = 10.0;
+
     // Maps a U(0,1) draw onto [kDrawLo, kDrawHi).
     inline double DrawU(double uniform) { return kDrawLo + (kDrawHi - kDrawLo) * uniform; }
 
