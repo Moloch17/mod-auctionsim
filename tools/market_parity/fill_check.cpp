@@ -81,6 +81,12 @@ int main(int argc, char** argv)
     {
         Market::Faction const& fac = data.factions[Market::FactionSlot(houseId)];
         Market::Engine engine;
+        // Bot slot i posts as owner i; one price memory per house, as the module keeps.
+        std::vector<uint32> owners;
+        for (uint32 b = 0; b < bots; ++b)
+            owners.push_back(b);
+        Market::PriceMemory memory;
+        memory.Reserve(fac.basket.size());
         Market::Rng rng(houseId);
         std::vector<Market::Listing> live;
         std::vector<Market::PostOrder> orders;
@@ -95,7 +101,7 @@ int main(int argc, char** argv)
             engine.Listings().assign(live.begin(), live.end());
             engine.BuildState(fac.items.size());
             orders.clear();
-            engine.PlanPosts(fac, bots, rng, orders);
+            engine.PlanPosts(fac, owners, memory, clock, rng, orders);
             for (Market::PostOrder const& o : orders)
                 for (uint32 k = 0; k < o.listings; ++k)
                 {

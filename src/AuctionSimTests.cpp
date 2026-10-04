@@ -1640,6 +1640,123 @@ namespace
         return Pass(name);
     }
 
+    // Bot slot i posts as owner i, as the parity harness runs it.
+    std::vector<uint32> SlotOwners(uint32 bots)
+    {
+        std::vector<uint32> owners;
+        for (uint32 b = 0; b < bots; ++b)
+        {
+            owners.push_back(b);
+        }
+        return owners;
+    }
+
+    TestResult TestMarketPriceMemory()
+    {
+        std::string const name = "Market price memory";
+
+        // Draws stay inside the q05..q95 interpolation range.
+        Market::Quantiles q = {0, 1, 2, 3, 4, 5, 6};
+        double const lo = Market::QuantileDraw(q, Market::kDrawLo);  // 0.375
+        double const hi = Market::QuantileDraw(q, Market::kDrawHi);  // 5.625
+        Market::Rng rng(77);
+        double seenLo = 1e9, seenHi = -1e9;
+        for (int i = 0; i < 100000; ++i)
+        {
+            double d = Market::QuantileDraw(q, Market::DrawU(rng.Uniform()));
+            seenLo = std::min(seenLo, d);
+            seenHi = std::max(seenHi, d);
+        }
+        if (std::fabs(lo - 0.375) > 1e-9 || std::fabs(hi - 5.625) > 1e-9 || seenLo < lo || seenHi > hi ||
+            seenLo > lo + 0.01 || seenHi < hi - 0.01)
+        {
+            return Fail(name, Acore::StringFormat("draws spanned [{}, {}], want [{}, {}]", seenLo, seenHi, lo, hi));
+        }
+
+        // Blending: 0.75 on the remembered price, in log space.
+        if (Market::BlendWithMemory(100.0, 0.0) != 100.0 ||
+            std::fabs(Market::BlendWithMemory(16.0, 256.0) - 128.0) > 1e-6 ||
+            std::fabs(Market::BlendWithMemory(100.0, 100.0) - 100.0) > 1e-9)
+        {
+            return Fail(name, "BlendWithMemory math wrong");
+        }
+
+        Market::Data data;
+        std::string error;
+        if (!ParseFixture(MarketFixture(), data, error))
+        {
+            return Fail(name, error);
+        }
+        Market::Faction const& fac = data.factions[0];
+        uint32 const linen = static_cast<uint32>(fac.FindItem(2589));
+        Market::BasketRow const& linenRow = fac.basket[0];
+        Market::BasketRow const& potionRow = fac.basket[2];
+        uint32 const potion = potionRow.itemIdx;
+
+        // Linen up: owner 3 at 50 (the cheapest), owner 7 at 70 and 90.
+        Market::Engine engine;
+        auto add = [&engine, linen](uint32 perUnit, uint32 owner) {
+            Market::Listing listing;
+            listing.itemIdx = linen;
+            listing.perUnit = perUnit;
+            listing.count = 20;
+            listing.owner = owner;
+            listing.flags = Market::Listing::kBuyable;
+            engine.Listings().push_back(listing);
+        };
+        add(90, 7);
+        add(50, 3);
+        add(70, 7);
+        engine.BuildState(fac.items.size());
+        Market::PriceMemory memory;
+        uint64 const t0 = 1783296000ULL;
+
+        // The own-listing fallback: owner 7's cheapest own linen is 70; owner 8 has none.
+        if (engine.RememberedPrice(linen, 7, memory, t0) != 70 || engine.RememberedPrice(linen, 8, memory, t0) != 0)
+        {
+            return Fail(name, "own-listing fallback wrong");
+        }
+
+        // Linen's fresh draw is the cheapest (50, zero quantiles): owner 7 blends with 70.
+        auto expect = [](double fresh, double remembered) {
+            return static_cast<uint32>(std::floor(Market::BlendWithMemory(fresh, remembered) + 0.5));
+        };
+        uint32 first = engine.DrawUnitPrice(fac, linenRow, 7, memory, t0, rng);
+        uint32 second = engine.DrawUnitPrice(fac, linenRow, 7, memory, t0 + 3600, rng);
+        uint32 plain = engine.DrawUnitPrice(fac, linenRow, 8, memory, t0, rng);
+        if (first != expect(50, 70) || second != expect(50, first) || plain != 50)
+        {
+            return Fail(name, Acore::StringFormat("linen prices {} / {} / {}, want {} / {} / 50", first, second, plain,
+                expect(50, 70), expect(50, first)));
+        }
+
+        // 72 h after its last post the memory has lapsed: back to the own listing (70).
+        uint64 const later = t0 + 3600 + Market::kMemorySeconds;
+        if (memory.Recent(7, linen, later - 1) != second || memory.Recent(7, linen, later) != 0 ||
+            engine.RememberedPrice(linen, 7, memory, later) != 70)
+        {
+            return Fail(name, "the 72 h memory expiry is wrong");
+        }
+        // Owner 7 last posted at t0 + 1 h and owner 8 at t0: at `later` both have lapsed.
+        if (memory.Prune(later - 1) != 1 || memory.Prune(later) != 1 || memory.Size() != 0)
+        {
+            return Fail(name, "Prune didn't drop exactly the lapsed entries");
+        }
+
+        // Floors apply after blending: potion's fresh draw is 50 (ref), remembered 40;
+        // the blend (42) is raised to the vendor floor of 80 (blending after the floor
+        // would give 47).
+        Market::PriceMemory potionMemory;
+        potionMemory.Store(5, potion, 40, t0);
+        uint32 potionPrice = engine.DrawUnitPrice(fac, potionRow, 5, potionMemory, t0 + 60, rng);
+        if (potionPrice != 80 || potionMemory.Recent(5, potion, t0 + 60) != 80)
+        {
+            return Fail(name, Acore::StringFormat("potion {} (memory {}), want 80 after the floor", potionPrice,
+                potionMemory.Recent(5, potion, t0 + 60)));
+        }
+        return Pass(name, Acore::StringFormat("draws in [{:.3f}, {:.3f}]", seenLo, seenHi));
+    }
+
     TestResult TestMarketScaleMath()
     {
         std::string const name = "Market scale math";
@@ -1680,8 +1797,9 @@ namespace
         engine.BuildState(data.factions[0].items.size());
         std::vector<Market::PostOrder> few, many;
         Market::Rng a(99), b(99);
-        engine.PlanPosts(data.factions[0], 1, a, few);
-        engine.PlanPosts(data.factions[0], 100, b, many);
+        Market::PriceMemory memoryFew, memoryMany;
+        engine.PlanPosts(data.factions[0], SlotOwners(1), memoryFew, 0, a, few);
+        engine.PlanPosts(data.factions[0], SlotOwners(100), memoryMany, 0, b, many);
         if (few.empty() || few.size() != many.size())
         {
             return Fail(name, Acore::StringFormat("{} posts with 1 bot, {} with 100", few.size(), many.size()));
@@ -1694,7 +1812,7 @@ namespace
             }
         }
         std::vector<Market::PostOrder> zero;
-        engine.PlanPosts(data.factions[0], 0, a, zero);
+        engine.PlanPosts(data.factions[0], SlotOwners(0), memoryFew, 0, a, zero);
         if (!zero.empty())
         {
             return Fail(name, "posted with no bots in use");
@@ -1739,12 +1857,14 @@ namespace
         }
 
         Market::Rng rng(5);
+        // Seller 99 has nothing up and remembers nothing: the plain draw.
+        Market::PriceMemory memory;
         // Bolt: nothing up (mb -1) -> ref 100, but the craft floor is 1.1 x 2 x cheapest linen 50 = 110.
-        uint32 boltPrice = engine.DrawUnitPrice(fac, fac.basket[1], rng);
+        uint32 boltPrice = engine.DrawUnitPrice(fac, fac.basket[1], 99, memory, 0, rng);
         // Potion: ref 50 but its vendor price is 80.
-        uint32 potionPrice = engine.DrawUnitPrice(fac, fac.basket[2], rng);
+        uint32 potionPrice = engine.DrawUnitPrice(fac, fac.basket[2], 99, memory, 0, rng);
         // Linen: mb 5 (cheapest 50 = 0.42 x ref -> ln -0.87 -> bin 1), global offset 0 -> the cheapest.
-        uint32 linenPrice = engine.DrawUnitPrice(fac, fac.basket[0], rng);
+        uint32 linenPrice = engine.DrawUnitPrice(fac, fac.basket[0], 99, memory, 0, rng);
         if (boltPrice != 110 || potionPrice != 80 || linenPrice != 50)
         {
             return Fail(name, Acore::StringFormat("prices bolt {} potion {} linen {}, want 110 / 80 / 50",
@@ -1882,6 +2002,9 @@ namespace
             int steps;
         };
         Market::Engine engine;
+        std::vector<uint32> const owners = SlotOwners(100);
+        Market::PriceMemory memory;
+        memory.Reserve(fac.basket.size());
         std::vector<Market::Listing> house;
         std::vector<Market::PostOrder> orders;
         std::vector<uint32> claims;
@@ -1911,7 +2034,7 @@ namespace
                 engine.Listings().assign(house.begin(), house.end());
                 engine.BuildState(fac.items.size());
                 orders.clear();
-                engine.PlanPosts(fac, 100, gen, orders);
+                engine.PlanPosts(fac, owners, memory, uint64(step) * 1800, gen, orders);
                 for (Market::PostOrder const& order : orders)
                 {
                     Market::Listing listing;
@@ -1984,6 +2107,8 @@ namespace
         uint32 const steps = hours * 2;
         uint64 const startClock = endClock - uint64(hours) * 3600;
         uint32 nextId = 1;
+        std::vector<uint32> const owners = SlotOwners(bots);
+        Market::PriceMemory memory;
         for (uint32 step = 0; step < steps; ++step)
         {
             uint64 const clock = startClock + uint64(step) * 1800;
@@ -1993,7 +2118,7 @@ namespace
             engine.Listings().assign(live.begin(), live.end());
             engine.BuildState(fac.items.size());
             orders.clear();
-            engine.PlanPosts(fac, bots, rng, orders);
+            engine.PlanPosts(fac, owners, memory, clock, rng, orders);
             for (Market::PostOrder const& order : orders)
             {
                 for (uint32 k = 0; k < order.listings; ++k)
@@ -2654,6 +2779,7 @@ namespace AuctionSimTests
             TestMarketMissingFile(config),
             TestMarketBins(),
             TestMarketQuantileDraw(),
+            TestMarketPriceMemory(),
             TestMarketReservationBounds(),
             TestMarketScaleMath(),
             TestMarketPricingAndBuyers(),

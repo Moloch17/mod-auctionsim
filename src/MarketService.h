@@ -149,5 +149,11 @@ private:
         long long micros = 0;
     };
     std::array<Fill, Market::kFactions> _fills;
+
+    // Per house price memory (MARKET_FORMAT.md "Price memory"), pruned about daily.
+    static constexpr uint64 kMemoryPruneSeconds = 24 * 3600;
+    std::array<Market::PriceMemory, Market::kFactions> _memories;
+    std::array<uint64, Market::kFactions> _memoryPrunedAt{};
+    std::vector<uint32> _slotOwners;
     std::vector<Market::Listing> _fillScratch;
 };

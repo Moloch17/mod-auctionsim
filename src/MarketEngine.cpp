@@ -73,7 +73,73 @@ namespace Market
         return static_cast<double>(item.craftMargin) * sum;
     }
 
-    uint32 Engine::DrawUnitPrice(Faction const& fac, BasketRow const& row, Rng& rng) const
+    double BlendWithMemory(double fresh, double remembered)
+    {
+        if (!(remembered > 0.0) || !(fresh > 0.0))
+        {
+            return fresh;
+        }
+        return std::exp(kMemoryWeight * std::log(remembered) + (1.0 - kMemoryWeight) * std::log(fresh));
+    }
+
+    uint32 PriceMemory::Recent(uint32 owner, uint32 itemIdx, uint64 now) const
+    {
+        auto it = _entries.find(Key(owner, itemIdx));
+        if (it == _entries.end() || now >= uint64(it->second.time) + kMemorySeconds)
+        {
+            return 0;
+        }
+        return it->second.unitPrice;
+    }
+
+    void PriceMemory::Store(uint32 owner, uint32 itemIdx, uint32 unitPrice, uint64 now)
+    {
+        _entries[Key(owner, itemIdx)] = {unitPrice, static_cast<uint32>(now)};
+    }
+
+    size_t PriceMemory::Prune(uint64 now)
+    {
+        size_t dropped = 0;
+        for (auto it = _entries.begin(); it != _entries.end();)
+        {
+            if (now >= uint64(it->second.time) + kMemorySeconds)
+            {
+                it = _entries.erase(it);
+                ++dropped;
+            }
+            else
+            {
+                ++it;
+            }
+        }
+        return dropped;
+    }
+
+    uint32 Engine::RememberedPrice(uint32 itemIdx, uint32 owner, PriceMemory const& memory, uint64 now) const
+    {
+        if (uint32 recent = memory.Recent(owner, itemIdx, now))
+        {
+            return recent;
+        }
+        if (itemIdx >= _state.size())
+        {
+            return 0;
+        }
+        // The item's listings are sorted cheapest first: the owner's first is its cheapest.
+        ItemState const& state = _state[itemIdx];
+        for (uint32 i = state.begin; i < state.end; ++i)
+        {
+            Listing const& listing = _listings[i];
+            if (listing.owner == owner && listing.perUnit != Listing::kNoBuyout)
+            {
+                return listing.perUnit;
+            }
+        }
+        return 0;
+    }
+
+    uint32 Engine::DrawUnitPrice(
+        Faction const& fac, BasketRow const& row, uint32 owner, PriceMemory& memory, uint64 now, Rng& rng) const
     {
         Item const& item = fac.items[row.itemIdx];
         ItemState const& state = _state[row.itemIdx];
@@ -87,24 +153,34 @@ namespace Market
         double unit = mb >= 0 ? cheapest : ref;
         if (policy)
         {
-            unit *= std::exp(QuantileDraw(policy->q, rng.Uniform()) + static_cast<double>(policy->offset));
+            unit *= std::exp(QuantileDraw(policy->q, DrawU(rng.Uniform())) + static_cast<double>(policy->offset));
         }
+        unit = BlendWithMemory(unit, static_cast<double>(RememberedPrice(row.itemIdx, owner, memory, now)));
         unit = std::max({unit, static_cast<double>(item.vendor), CraftFloor(fac, item)});
-        return RoundPrice(unit);
+        uint32 const price = RoundPrice(unit);
+        memory.Store(owner, row.itemIdx, price, now);
+        return price;
     }
 
     uint32 Engine::DrawCount(Faction const& fac, BasketRow const& row, Rng& rng) const
     {
         Item const& item = fac.items[row.itemIdx];
-        double draw = row.stack >= 0 ? QuantileDraw(fac.stacks[row.stack], rng.Uniform()) : 0.0;
+        double draw = row.stack >= 0 ? QuantileDraw(fac.stacks[row.stack], DrawU(rng.Uniform())) : 0.0;
         // nearbyint: round half to even, as the reference's Python round() does.
         double count = std::nearbyint(static_cast<double>(item.conv) * std::exp(draw));
         count = std::clamp(count, 1.0, static_cast<double>(item.maxc));
         return static_cast<uint32>(count);
     }
 
-    void Engine::PlanPosts(Faction const& fac, uint32 bots, Rng& rng, std::vector<PostOrder>& out) const
+    void Engine::PlanPosts(
+        Faction const& fac,
+        std::vector<uint32> const& slotOwners,
+        PriceMemory& memory,
+        uint64 now,
+        Rng& rng,
+        std::vector<PostOrder>& out) const
     {
+        uint32 const bots = static_cast<uint32>(slotOwners.size());
         if (bots == 0)
         {
             return;
@@ -119,7 +195,7 @@ namespace Market
                 order.botSlot = row.bot % bots;
                 order.listings = 1 + rng.Poisson(static_cast<double>(row.batch) - 1.0, row.expNegBatch);
                 order.count = DrawCount(fac, row, rng);
-                order.unitPrice = DrawUnitPrice(fac, row, rng);
+                order.unitPrice = DrawUnitPrice(fac, row, slotOwners[order.botSlot], memory, now, rng);
                 if (rng.Uniform() < static_cast<double>(row.tl4))
                 {
                     order.hours = rng.Uniform() < 0.5 ? 24 : 48;
@@ -218,6 +294,9 @@ namespace Market
         }
         _virtual.clear();
         _slotOwners = slotOwners;
+        // An empty memory: the own-listing fallback starts it from the sellers' listings up.
+        _memory.Clear();
+        _memory.Reserve(fac.basket.size());
         _weekdays = weekdays;
         _scale = scale;
         _dtHours = dtHours;
@@ -237,7 +316,6 @@ namespace Market
             return true;
         }
         Faction const& fac = *_fac;
-        uint32 const bots = static_cast<uint32>(_slotOwners.size());
         for (uint32 n = 0; n < steps && _step < _steps; ++n, ++_step)
         {
             uint64 const clock = _startClock + static_cast<uint64>(static_cast<double>(_step) * _dtHours * 3600.0);
@@ -252,7 +330,7 @@ namespace Market
             _engine.BuildState(fac.items.size());
 
             _orders.clear();
-            _engine.PlanPosts(fac, bots, rng, _orders);
+            _engine.PlanPosts(fac, _slotOwners, _memory, clock, rng, _orders);
             for (PostOrder const& order : _orders)
             {
                 for (uint32 k = 0; k < order.listings; ++k)

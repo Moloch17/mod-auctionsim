@@ -50,6 +50,13 @@ namespace Market
 
     using Quantiles = std::array<float, kQuantiles>;
 
+    // POLICY / STACK draws take u ~ U(kDrawLo, kDrawHi): the stored tails beyond are
+    // real overpricers and typos, and drawn they would put walls of 10x listings up.
+    constexpr double kDrawLo = 0.05;
+    constexpr double kDrawHi = 0.95;
+    // Maps a U(0,1) draw onto [kDrawLo, kDrawHi).
+    inline double DrawU(double uniform) { return kDrawLo + (kDrawHi - kDrawLo) * uniform; }
+
     // Draws from 7 stored quantiles: u below 0.02 or above 0.98 gives the end value,
     // otherwise linear interpolation between the two stored p around u.
     double QuantileDraw(Quantiles const& q, double u);

@@ -10,6 +10,11 @@
 
 int main(int argc, char** argv)
 {
+    if (argc < 3)
+    {
+        fprintf(stderr, "usage: %s <auctionsim_market.dat> <output dir>\n", argv[0]);
+        return 2;
+    }
     Market::Data data;
     std::string error;
     std::ifstream in(argv[1]);
@@ -29,6 +34,12 @@ int main(int argc, char** argv)
         size_t slot = Market::FactionSlot(house);
         Market::Faction const& fac = data.factions[slot];
         Market::Engine engine;
+        // Bot slot i posts as owner i; one price memory per house, as the module keeps.
+        std::vector<uint32> owners;
+        for (uint32 b = 0; b < bots; ++b)
+            owners.push_back(b);
+        Market::PriceMemory memory;
+        memory.Reserve(fac.basket.size());
         Market::Rng rng(house);
         std::vector<Market::Listing> live;
         std::vector<Market::PostOrder> orders;
@@ -51,7 +62,7 @@ int main(int argc, char** argv)
             engine.BuildState(fac.items.size());
 
             orders.clear();
-            engine.PlanPosts(fac, bots, rng, orders);
+            engine.PlanPosts(fac, owners, memory, clock, rng, orders);
             events += orders.size();
             for (Market::PostOrder const& o : orders)
             {
@@ -115,8 +126,9 @@ int main(int argc, char** argv)
             }
         }
         fclose(out);
-        printf("faction %u: post events %llu, listings posted %llu, buyers %llu, sales %llu, house at end %zu -> %s\n",
+        printf("faction %u: post events %llu, listings posted %llu, buyers %llu, sales %llu, house at end %zu, "
+               "price memory entries %zu -> %s\n",
             house, (unsigned long long)events, (unsigned long long)posts, (unsigned long long)buyers,
-            (unsigned long long)sales, live.size(), path.c_str());
+            (unsigned long long)sales, live.size(), memory.Size(), path.c_str());
     }
 }

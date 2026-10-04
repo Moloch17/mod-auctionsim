@@ -104,6 +104,11 @@ MarketService::MarketService(
       _buyerGuid(buyerGuid),
       _rng((static_cast<uint64>(rand32()) << 32) | rand32())
 {
+    // At most one entry per (seller, item) that posts: the basket size bounds it.
+    for (size_t faction = 0; faction < Market::kFactions; ++faction)
+    {
+        _memories[faction].Reserve(_data.factions[faction].basket.size());
+    }
 }
 
 void MarketService::SetScale(float scale)
@@ -372,7 +377,21 @@ void MarketService::StepHouse(size_t faction)
 
     // 1. Posts, priced from the state above; created now up to the tick budget.
     _orders.clear();
-    engine.PlanPosts(fac, BotsInUse(faction), _rng, _orders);
+    _slotOwners.clear();
+    for (ObjectGuid const& guid : _roster.Slots(faction))
+    {
+        _slotOwners.push_back(guid.GetCounter());
+    }
+    uint64 const nowClock = static_cast<uint64>(GameTime::GetGameTime().count());
+    Market::PriceMemory& memory = _memories[faction];
+    if (nowClock >= _memoryPrunedAt[faction] + kMemoryPruneSeconds)
+    {
+        size_t dropped = memory.Prune(nowClock);
+        _memoryPrunedAt[faction] = nowClock;
+        LOG_DEBUG("module", "AuctionSim: price memory house {}: pruned {}, {} left", Market::FactionHouse(faction),
+            dropped, memory.Size());
+    }
+    engine.PlanPosts(fac, _slotOwners, memory, nowClock, _rng, _orders);
     stats.postEvents = static_cast<uint32>(_orders.size());
     if (!_orders.empty())
     {
