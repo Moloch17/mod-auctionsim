@@ -72,6 +72,14 @@ public:
     std::unordered_set<uint32> vendorSoldItems;
     bool IsVendorSold(uint32 itemId) const { return vendorSoldItems.count(itemId) > 0; }
 
+    // The most the bot pays per unit for the item, by buyout or by bid, in Replay and
+    // Market mode alike (AuctionPricing::IsWithinVendorBuyPrice): its vendor purchase
+    // price if a vendor stocks it, else 0 (no cap).
+    uint32 VendorBuyCap(ItemTemplate const* proto) const
+    {
+        return (IsVendorSold(proto->ItemId) && proto->BuyPrice > 0) ? static_cast<uint32>(proto->BuyPrice) : 0;
+    }
+
     // ScannedItem storage. A std::deque, not a vector: the ScannedItem* kept in
     // ItemSelectionTable / ItemIndex must stay valid as rows are appended, and a
     // deque never relocates existing elements on growth (a vector would).
