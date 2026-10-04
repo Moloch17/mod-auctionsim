@@ -51,6 +51,10 @@ namespace
         constexpr std::string_view SetBotChar = "SETBOTCHAR";
         constexpr std::string_view MarketFill = "MARKETFILL";    // [alliance|horde]
         constexpr std::string_view MarketPurge = "MARKETPURGE";  // [confirm]
+        constexpr std::string_view MarketStatus = "MARKETSTATUS";
+        constexpr std::string_view MarketReload = "MARKETRELOAD";
+        // Sent after the GM ticks Market Mode and answers Yes to the restart prompt.
+        constexpr std::string_view RestartWorld = "RESTARTWORLD";
 
         // Outbound: server -> client message types.
         constexpr std::string_view Error = "ERROR";
@@ -149,6 +153,7 @@ namespace
         SendMessage(target, Acore::StringFormat("{}\tMode\t{}", Msg::Config, ASConfig::ModeName(modeShown)));
         SendMessage(target, Acore::StringFormat("{}\tMarketBots\t{}", Msg::Config, config->marketBots));
         SendMessage(target, Acore::StringFormat("{}\tMarketScale\t{:g}", Msg::Config, config->marketScale));
+        SendMessage(target, Acore::StringFormat("{}\tReplayBidding\t{}", Msg::Config, config->replayBidding ? 1 : 0));
 
         for (ASConfig::MaskKeyEntry const& entry : ASConfig::AllMaskKeys())
         {
@@ -231,6 +236,18 @@ namespace
                 return;
             }
             modeChanged = true;
+            stagedKeys.insert(key);
+            return;
+        }
+        if (key == "ReplayBidding")
+        {
+            bool enabled = true;
+            if (!ASConfig::ParseReplayBidding(valueStr, enabled) || valueStr.empty())
+            {
+                SendError(target, Acore::StringFormat("'{}' is not 0 or 1", valueStr));
+                return;
+            }
+            AuctionSim::instance()->SetReplayBidding(enabled);  // live from the next scan
             stagedKeys.insert(key);
             return;
         }
@@ -317,6 +334,10 @@ namespace
             else if (key == "Mode")
             {
                 edits.push_back({"Mode", "", ASConfig::ModeName(stagedMarketMode)});
+            }
+            else if (key == "ReplayBidding")
+            {
+                edits.push_back({"Replay.Bidding", "", config->replayBidding ? "1" : "0"});
             }
             else if (key == "MarketBots")
             {
@@ -558,6 +579,48 @@ namespace
         }
     }
 
+    // Not gated: says why the market isn't running when it isn't.
+    void HandleMarketStatus(Player* target, std::vector<std::string_view> const&)
+    {
+        for (std::string const& line : AuctionSim::instance()->DescribeMarketStatus())
+        {
+            SendMessage(target, Acore::StringFormat("{}\t{}", Msg::MarketMsg, line));
+        }
+    }
+
+    void HandleMarketReload(Player* target, std::vector<std::string_view> const&)
+    {
+        std::string note;
+        bool ok = AuctionSim::instance()->ReloadMarket(note);
+        std::string line = Acore::StringFormat("Market reload {}: {}", ok ? "done" : "failed", note);
+        LOG_INFO("module", "AuctionSim: {}", line);
+        SendMessage(target, Acore::StringFormat("{}\t{}", Msg::MarketMsg, line));
+    }
+
+    // The stock restart (as ".server restart 10"): a 10 s countdown the core announces to
+    // players, then exit code 2. Coming back up is the host's job (Docker restart policy,
+    // a service manager or the restarter script). Refused while a shutdown is pending.
+    void HandleRestartWorld(Player* target, std::vector<std::string_view> const&)
+    {
+        constexpr uint32 kRestartDelaySeconds = 10;
+        if (sWorld->IsShuttingDown())
+        {
+            SendError(target, "A shutdown or restart is already pending.");
+            return;
+        }
+        LOG_INFO(
+            "module",
+            "AuctionSim: worldserver restart requested by GM {} (account {}) from the addon to apply AuctionSim.Mode",
+            target->GetName(),
+            target->GetSession()->GetAccountId());
+        sWorld->ShutdownServ(
+            kRestartDelaySeconds, SHUTDOWN_MASK_RESTART, RESTART_EXIT_CODE, "AuctionSim: applying Market mode");
+        SendMessage(
+            target,
+            Acore::StringFormat(
+                "{}\tWorldserver restarting in {} s to apply the mode change.", Msg::MarketMsg, kRestartDelaySeconds));
+    }
+
     // Not gated on RequireEnabled: removing the footprint must work while disabled.
     void HandleMarketPurge(Player* target, std::vector<std::string_view> const& tokens)
     {
@@ -658,6 +721,9 @@ namespace
         {Msg::SetBotChar, HandleSetBotChar},
         {Msg::MarketFill, HandleMarketFill},
         {Msg::MarketPurge, HandleMarketPurge},
+        {Msg::MarketStatus, HandleMarketStatus},
+        {Msg::MarketReload, HandleMarketReload},
+        {Msg::RestartWorld, HandleRestartWorld},
     };
 
     void HandleRequest(Player* player, std::string const& payload)

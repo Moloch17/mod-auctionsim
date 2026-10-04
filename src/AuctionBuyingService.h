@@ -91,6 +91,12 @@ public:
 
     size_t QueueSize() const { return _queue.size(); }
 
+    // AuctionSim.Replay.Bidding. Turning it off drops every queued bid at once (buyouts
+    // stay queued); while off, ConsiderForBid queues nothing and a bid that reaches
+    // Execute anyway is skipped.
+    void SetBiddingEnabled(bool enabled);
+    bool IsBiddingEnabled() const { return _biddingEnabled; }
+
     // True while this auction waits in the queue (as a buyout or a bid).
     bool IsQueued(uint32 auctionId) const { return _queuedAuctionIds.count(auctionId) > 0; }
 
@@ -120,4 +126,5 @@ private:
     std::vector<QueuedPurchase> _queue;
     std::unordered_set<uint32> _queuedAuctionIds;
     std::unordered_map<uint32, uint32> _bidValuations;  // auction id -> per-unit valuation
+    bool _biddingEnabled = true;
 };

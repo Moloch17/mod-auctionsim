@@ -4,7 +4,7 @@
 # update. When it warns, copy the new keys from the refreshed auctionsim.conf.dist
 # (kept current in etc/modules/) into your auctionsim.conf. The module never edits
 # auctionsim.conf itself; missing keys fall back to built-in defaults meanwhile.
-AuctionSim.ConfigVersion = 2
+AuctionSim.ConfigVersion = 3
 
 # Enable or disable the entire module
 AuctionSim.Enabled = 0
@@ -17,6 +17,10 @@ AuctionSim.BotCharacterID = 0
 
 # Do a scan on server startup (in Market mode: one market step)
 AuctionSim.StartupScan = 0
+
+# ---- Experimental features (the addon's EXPERIMENTAL FEATURES tab) -------------
+# Market mode, its settings below, and Replay bidding are experimental: they work,
+# but their behaviour may still change between releases.
 
 # What runs the auction house. Changing it needs a worldserver restart.
 #
@@ -43,6 +47,14 @@ AuctionSim.Market.Bots = 100
 # auctions per faction, 0.1 = ~6k). Scales both posting and buying. The realm's
 # population doesn't matter: the market works the same with 1 player or 1000.
 AuctionSim.Market.Scale = 0.1
+
+# Replay mode: whether the bot bids. 1 (the default, the module's long-standing
+# behaviour) lets it outbid players and open bidding on players' auctions; 0 stops
+# all bidding -- no new bids, and bids already queued are dropped. Buyouts are
+# unaffected. Applies from the next scan when changed in the addon. Market mode
+# never bids either way.
+AuctionSim.Replay.Bidding = 1
+# ---- End of experimental features ------------------------------------------------
 
 # Maximum required level for items the bot will list. Items requiring a higher
 # level to use are skipped before being created. 0 disables this filter.

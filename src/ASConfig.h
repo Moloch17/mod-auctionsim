@@ -42,6 +42,17 @@ public:
     uint32 maxRequiredLevel = 0;
     uint32 maxItemLevel = 0;
 
+    // AuctionSim.Replay.Bidding (experimental): false stops the Replay bot bidding --
+    // no opening bids, no outbids, queued bids dropped. Buyouts are unaffected.
+    bool replayBidding = true;
+
+    // The value of AuctionSim.Replay.Bidding as read from the conf: empty (missing key)
+    // -> true, "1"/"true"/"yes" -> true, "0"/"false"/"no" -> false (any case). False
+    // with `out` left alone on anything else.
+    static bool ParseReplayBidding(std::string_view text, bool& out);
+    // Re-reads AuctionSim.Replay.Bidding from ConfigMgr (after a reload).
+    void LoadReplayBidding();
+
     // AuctionSim.Mode: Replay (false, the default) replays auctionsim.dat's scanned
     // market; Market (true) runs the learned market from auctionsim_market.dat.
     bool marketMode = false;

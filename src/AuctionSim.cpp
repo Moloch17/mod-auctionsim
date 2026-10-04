@@ -286,6 +286,7 @@ bool AuctionSim::ReloadMarket(std::string& note)
     _marketPurged = false;
     config->marketBots = fresh->marketBots;
     config->marketScale = fresh->marketScale;
+    config->replayBidding = fresh->replayBidding;
     if (!LoadMarketData())
     {
         note = Acore::StringFormat("auctionsim_market.dat: {}", _marketError);
@@ -328,6 +329,10 @@ bool AuctionSim::StartOrReloadBot(bool reloadConfig)
     {
         return false;
     }
+    if (reloadConfig)
+    {
+        config->LoadReplayBidding();
+    }
 
     // Market mode without its tables never starts (the GM is told at login).
     if (config->marketMode && !marketData)
@@ -355,6 +360,7 @@ bool AuctionSim::StartOrReloadBot(bool reloadConfig)
     market.reset();  // holds a reference to the old buying service
     listingService = std::make_unique<AuctionListingService>(*bot, *config);
     buyingService = std::make_unique<AuctionBuyingService>(*bot);
+    buyingService->SetBiddingEnabled(config->replayBidding);
 
     if (config->marketMode)
     {
@@ -408,6 +414,7 @@ void AuctionSim::ScanAuctions(AuctionHouseId _AuctionHouseId)
 
     ObjectGuid const botGuid = bot->GetPlayer()->GetGUID();
 
+    buyingService->SetBiddingEnabled(config->replayBidding);
     buyingService->RollTolerance();
     buyingService->PruneBidValuations();
 
@@ -495,7 +502,7 @@ void AuctionSim::ScanAuctions(AuctionHouseId _AuctionHouseId)
         // acceptable buyout still wins over a bid.
         bool const playerHoldsBid = auction->bid > 0 && auction->bidder && auction->bidder != botGuid;
         bool const openable = auction->bid == 0 && !isBotOwned;
-        if (playerHoldsBid || openable)
+        if (AuctionPricing::MayBid(config->replayBidding, playerHoldsBid, openable))
         {
             AuctionBuyingService::BidLimits limits;
             limits.valuationLowPerUnit = scannedItem->GetBidValuationLow();
@@ -831,6 +838,73 @@ std::vector<std::string> AuctionSim::FillMarket(std::string_view which, bool& ok
     if (ok)
     {
         lines.push_back("Progress: .auctionsim market status");
+    }
+    return lines;
+}
+
+std::vector<std::string> AuctionSim::DescribeMarketStatus() const
+{
+    std::vector<std::string> lines;
+    if (!IsMarketMode())
+    {
+        lines.push_back("AuctionSim is in Replay mode (AuctionSim.Mode = Replay).");
+        return lines;
+    }
+    if (IsMarketUnavailable())
+    {
+        lines.push_back(Acore::StringFormat(
+            "Market mode can't run: auctionsim_market.dat {} (file schema v{}, needs v{}).",
+            MarketError(),
+            MarketHaveVersion(),
+            MarketNeedVersion()));
+        return lines;
+    }
+    MarketService const* service = market.get();
+    if (!service)
+    {
+        lines.push_back(
+            IsMarketPurged()
+                ? "Market mode: stopped by a purge until restart or \".auctionsim market reload\"."
+                : "Market mode: data loaded, market not running (module disabled?).");
+        return lines;
+    }
+    if (!service->IsReady())
+    {
+        lines.push_back(Acore::StringFormat("Market mode: setting up sellers -- {}", service->SetupNote()));
+        return lines;
+    }
+    lines.push_back(Acore::StringFormat(
+        "Market mode: scale {:g}, {} Alliance / {} Horde sellers, {} listing(s) waiting to post, buy queue {}.",
+        service->GetScale(),
+        service->BotsInUse(0),
+        service->BotsInUse(1),
+        service->PendingListings(),
+        GetBuyQueue().size()));
+    for (size_t faction = 0; faction < Market::kFactions; ++faction)
+    {
+        MarketService::HouseStats const& stats = service->LastStats(faction);
+        lines.push_back(Acore::StringFormat(
+            "  last step, {}: {} listings seen, {} post events, {} created ({} carried), {} buyers, {} buys "
+            "queued, {} us",
+            faction == 0 ? "Alliance" : "Horde",
+            stats.listingsSeen,
+            stats.postEvents,
+            stats.listingsCreated,
+            stats.listingsCarried,
+            stats.buyers,
+            stats.buysQueued,
+            stats.micros));
+        MarketService::FillStatus fill = service->GetFillStatus(faction);
+        if (fill.running)
+        {
+            lines.push_back(
+                Acore::StringFormat("  fill running: {}/{} simulated steps", fill.stepsDone, fill.stepsTotal));
+        }
+        else if (fill.stepsTotal > 0)
+        {
+            lines.push_back(Acore::StringFormat(
+                "  last fill: {} listings queued ({} us of simulation)", fill.result, fill.micros));
+        }
     }
     return lines;
 }

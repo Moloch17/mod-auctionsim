@@ -634,6 +634,90 @@ namespace
         return Pass("Buy queue leaves not-yet-due items alone");
     }
 
+    TestResult TestReplayBiddingConfig()
+    {
+        std::string const name = "Replay bidding config";
+        struct Case
+        {
+            char const* text;
+            bool parses;
+            bool value;
+        };
+        Case const cases[] = {
+            {"", true, true},  // key missing: today's behaviour
+            {"1", true, true},
+            {"0", true, false},
+            {"true", true, true},
+            {"FALSE", true, false},
+            {" 0 ", true, false},
+            {"\"1\"", true, true},
+            {"2", false, true},
+            {"maybe", false, true},
+        };
+        for (Case const& c : cases)
+        {
+            bool value = true;
+            bool parsed = ASConfig::ParseReplayBidding(c.text, value);
+            if (parsed != c.parses || (parsed && value != c.value))
+            {
+                return Fail(name, Acore::StringFormat("'{}' parsed {} as {}", c.text, parsed, value));
+            }
+        }
+
+        // The scan's gate: never with bidding off; with it on, an outbid or an opening bid.
+        for (bool holds : {false, true})
+        {
+            for (bool openable : {false, true})
+            {
+                if (AuctionPricing::MayBid(false, holds, openable) ||
+                    AuctionPricing::MayBid(true, holds, openable) != (holds || openable))
+                {
+                    return Fail(name, Acore::StringFormat("MayBid wrong for holds={} openable={}", holds, openable));
+                }
+            }
+        }
+        return Pass(name);
+    }
+
+    // Bidding off: queued bids are dropped, buyouts stay, and no new bid is queued.
+    TestResult TestBidQueueBiddingOff(Bot& bot)
+    {
+        std::string const name = "Bid queue with bidding off";
+        time_t now = GameTime::GetGameTime().count();
+        AuctionEntry* buyout = MakeTestAuctionEntry(0xFFFFFF40, now + 100000);
+        AuctionEntry* bid = MakeTestAuctionEntry(0xFFFFFF41, now + 100000);
+        AuctionEntry* fresh = MakeTestAuctionEntry(0xFFFFFF42, now + 100000);
+        fresh->startbid = 10;
+        fresh->itemCount = 1;
+
+        AuctionBuyingService testService(bot);
+        testService.EnqueueForTest(buyout, now + 10000);
+        testService.EnqueueBidForTest(bid, now + 10000, 1'000'000);
+        testService.SetBiddingEnabled(false);
+        bool const dropped = testService.QueueSize() == 1 && testService.IsQueued(buyout->Id) &&
+                             !testService.IsQueued(bid->Id);
+
+        AuctionBuyingService::BidLimits limits;
+        limits.valuationLowPerUnit = 1'000'000;
+        limits.marketPerUnit = 1'000'000;
+        testService.ConsiderForBid(fresh, limits);
+        bool const noneQueued = !testService.IsQueued(fresh->Id);
+
+        delete buyout;
+        delete bid;
+        delete fresh;
+
+        if (!dropped)
+        {
+            return Fail(name, "turning bidding off didn't drop exactly the queued bid");
+        }
+        if (!noneQueued)
+        {
+            return Fail(name, "a bid was queued with bidding off");
+        }
+        return Pass(name);
+    }
+
     TestResult TestRollStartBidBounds()
     {
         // Healthy sample: startbid stays inside [buyout*lowRatio, buyout*highRatio].
@@ -2297,6 +2381,8 @@ namespace AuctionSimTests
             TestBidQueueSharesBuyoutDedupe(bot),
             TestProcessDueQueueBidRevalidatesMissing(bot),
             TestDrainQueueRunsAllActions(bot),
+            TestReplayBiddingConfig(),
+            TestBidQueueBiddingOff(bot),
         };
     }
 

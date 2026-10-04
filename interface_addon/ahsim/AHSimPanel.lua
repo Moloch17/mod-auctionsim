@@ -88,11 +88,12 @@ local LEFT_COLUMN_WIDTH = 130
 local COLUMN_GAP = 20
 local HEADER_GAP = 18
 
+local TAB_BAR_HEIGHT = 30
 local RESULTS_HEIGHT = 130  -- viewport height; MAX_RESULT_LINES caps scrollback
 local MAX_RESULT_LINES = 200
 
 local maskEditBoxes = {}
-local enabledCheckbox, startupScanCheckbox, marketModeCheckbox
+local enabledCheckbox, startupScanCheckbox, marketModeCheckbox, replayBiddingCheckbox
 local maxRequiredLevelBox, maxItemLevelBox, marketBotsBox, marketScaleBox
 local resultsLog                 -- ScrollingMessageFrame, created in BuildWindow
 local pendingResultLines = {}    -- lines logged before the window exists
@@ -379,12 +380,42 @@ function AHSim.BuildWindow()
     end
     pendingResultLines = {}
 
-    -- Left column: checkboxes + action buttons.
-    local actionsHeader = CreateSectionHeader(panel, "Actions")
-    actionsHeader:SetPoint("TOPLEFT", panel, "TOPLEFT", 2, 0)
+    -- Two pages above the shared Results log, switched by the tab bar: the main
+    -- page and EXPERIMENTAL FEATURES.
+    local mainPage = CreateFrame("Frame", "AHSimMainPage", panel)
+    mainPage:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, -TAB_BAR_HEIGHT)
+    mainPage:SetPoint("BOTTOMRIGHT", resultsBg, "TOPRIGHT", 0, 20)
+    local experimentalPage = CreateFrame("Frame", "AHSimExperimentalPage", panel)
+    experimentalPage:SetAllPoints(mainPage)
+    experimentalPage:Hide()
 
-    local leftColumn = CreateFrame("Frame", "AHSimLeftColumn", panel)
-    leftColumn:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, -HEADER_GAP)
+    local tabs = {}
+    local function SelectTab(index)
+        for i, tab in ipairs(tabs) do
+            if i == index then
+                tab.page:Show()
+                tab.button:LockHighlight()
+            else
+                tab.page:Hide()
+                tab.button:UnlockHighlight()
+            end
+        end
+    end
+    local tabWidths = { 150, 220 }
+    local tabX = 0
+    for i, def in ipairs({ { "Main", mainPage }, { "EXPERIMENTAL FEATURES", experimentalPage } }) do
+        local button = CreateCommandButton(panel, def[1], tabX, 0, tabWidths[i], function() SelectTab(i) end)
+        tabs[i] = { button = button, page = def[2] }
+        tabX = tabX + tabWidths[i] + 6
+    end
+    SelectTab(1)
+
+    -- Left column: checkboxes + action buttons.
+    local actionsHeader = CreateSectionHeader(mainPage, "Actions")
+    actionsHeader:SetPoint("TOPLEFT", mainPage, "TOPLEFT", 2, 0)
+
+    local leftColumn = CreateFrame("Frame", "AHSimLeftColumn", mainPage)
+    leftColumn:SetPoint("TOPLEFT", mainPage, "TOPLEFT", 0, -HEADER_GAP)
     leftColumn:SetSize(LEFT_COLUMN_WIDTH, 1)
 
     local ly = 0
@@ -403,17 +434,6 @@ function AHSim.BuildWindow()
     _G["AHSimStartupScanCheckboxText"]:SetText("Startup Scan")
     startupScanCheckbox:SetScript("OnClick", function(self)
         SetConfigAndSave("StartupScan", self:GetChecked() and "1" or "0")
-    end)
-    ly = ly + 26
-
-    -- AuctionSim.Mode: unticked = Replay, ticked = Market. Takes effect at restart.
-    marketModeCheckbox = CreateFrame("CheckButton", "AHSimMarketModeCheckbox", leftColumn, "UICheckButtonTemplate")
-    marketModeCheckbox:SetPoint("TOPLEFT", 0, -ly)
-    _G["AHSimMarketModeCheckboxText"]:SetText("Market Mode")
-    marketModeCheckbox:SetScript("OnClick", function(self)
-        local on = self:GetChecked()
-        SetConfigAndSave("Mode", on and "Market" or "Replay",
-            (on and "Market" or "Replay") .. " mode saved -- restart the worldserver to switch.")
     end)
     ly = ly + 40
 
@@ -437,26 +457,18 @@ function AHSim.BuildWindow()
     CreateCommandButton(
         leftColumn, "Set Bot Char", 0, -ly, LEFT_COLUMN_WIDTH, function() AHSim.ShowSetBotCharPopup() end)
     ly = ly + buttonStep
-    CreateCommandButton(
-        leftColumn, "Market Fill", 0, -ly, LEFT_COLUMN_WIDTH, function() AHSim:Send(OP.MARKETFILL) end)
-    ly = ly + buttonStep
-    -- Dry run first: the server reports what it would delete and, if anything, asks
-    -- (PURGEASK) for a second, confirming click.
-    CreateCommandButton(
-        leftColumn, "Market Purge", 0, -ly, LEFT_COLUMN_WIDTH, function() AHSim:Send(OP.MARKETPURGE) end)
-    ly = ly + buttonStep
     CreateCommandButton(leftColumn, "Help", 0, -ly, LEFT_COLUMN_WIDTH, function() AHSim.ShowHelp() end)
     ly = ly + ROW_HEIGHT
 
     leftColumn:SetHeight(ly)
 
     -- Right column: settings grid.
-    local settingsHeader = CreateSectionHeader(panel, "Listing Multipliers")
+    local settingsHeader = CreateSectionHeader(mainPage, "Listing Multipliers")
     settingsHeader:SetPoint("TOPLEFT", leftColumn, "TOPRIGHT", COLUMN_GAP + 2, HEADER_GAP)
 
-    local scrollFrame = CreateFrame("ScrollFrame", "AHSimScrollFrame", panel, "UIPanelScrollFrameTemplate")
+    local scrollFrame = CreateFrame("ScrollFrame", "AHSimScrollFrame", mainPage, "UIPanelScrollFrameTemplate")
     scrollFrame:SetPoint("TOPLEFT", leftColumn, "TOPRIGHT", COLUMN_GAP, 0)
-    scrollFrame:SetPoint("BOTTOMRIGHT", resultsBg, "TOPRIGHT", -34, 20)
+    scrollFrame:SetPoint("BOTTOMRIGHT", mainPage, "BOTTOMRIGHT", -34, 0)
 
     local content = CreateFrame("Frame", "AHSimScrollContent", scrollFrame)
     scrollFrame:SetScrollChild(content)
@@ -475,21 +487,6 @@ function AHSim.BuildWindow()
 
     y = y + 30
 
-    -- Market mode (AuctionSim.Market.*). Bots apply at restart / ".auctionsim market
-    -- reload"; Scale applies from the next market step.
-    CreateLabel(content, "Market Bots:", 4, -y)
-    marketBotsBox = CreateNumberBox(content, 140, -y, 60, function(self)
-        SetConfigAndSave("MarketBots", self:GetText(), "Market Bots saved -- applies at restart.")
-    end, 4)
-
-    CreateLabel(content, "Market Scale:", 230, -y)
-    marketScaleBox = CreateNumberBox(content, 340, -y, 60, function(self)
-        local value = FormatScaleValue(self:GetText())
-        self:SetText(value)
-        SetConfigAndSave("MarketScale", value, "Market Scale saved.")
-    end, 6, true)
-
-    y = y + 30
 
     -- Faint checkerboard behind the data rows so a cell tracks to its row and
     -- column. The quality-title row stays untinted. Drawn before the labels/boxes.
@@ -597,7 +594,95 @@ function AHSim.BuildWindow()
 
     y = y + 30
     content:SetSize(LABEL_COLUMN_WIDTH + #QUALITIES * COL_WIDTH + 20, y)
+
+    AHSim.BuildExperimentalPage(experimentalPage)
 end
+
+-- EXPERIMENTAL FEATURES tab: Market mode, its settings and commands, and Replay
+-- bidding. Everything here works but may still change between releases.
+function AHSim.BuildExperimentalPage(page)
+    local note = page:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    note:SetPoint("TOPLEFT", page, "TOPLEFT", 2, 0)
+    note:SetPoint("RIGHT", page, "RIGHT", -2, 0)
+    note:SetJustifyH("LEFT")
+    note:SetText("|cffff8000Experimental:|r these features work, but how they behave may still change between " ..
+        "releases. Market Mode replaces the Replay bot with named seller bots and buyers learned from a real " ..
+        "market (see Help, step 6). Replay Bidding turns the Replay bot's bidding on or off.")
+
+    local top = 44
+    local settingsHeader = CreateSectionHeader(page, "Settings")
+    settingsHeader:SetPoint("TOPLEFT", page, "TOPLEFT", 2, -top)
+
+    local settings = CreateFrame("Frame", nil, page)
+    settings:SetPoint("TOPLEFT", page, "TOPLEFT", 0, -(top + HEADER_GAP))
+    settings:SetSize(420, 1)
+    local y = 0
+
+    -- AuctionSim.Mode: unticked = Replay, ticked = Market. Takes effect at restart.
+    marketModeCheckbox = CreateFrame("CheckButton", "AHSimMarketModeCheckbox", settings, "UICheckButtonTemplate")
+    marketModeCheckbox:SetPoint("TOPLEFT", 0, -y)
+    _G["AHSimMarketModeCheckboxText"]:SetText("Market Mode (restart to switch)")
+    marketModeCheckbox:SetScript("OnClick", function(self)
+        local on = self:GetChecked()
+        SetConfigAndSave("Mode", on and "Market" or "Replay",
+            (on and "Market" or "Replay") .. " mode saved -- restart the worldserver to switch.")
+        if on then
+            StaticPopup_Show("AHSIM_RESTART_FOR_MARKET")  -- saved either way; Yes restarts now
+        end
+    end)
+    y = y + 26
+
+    -- AuctionSim.Replay.Bidding: live from the next scan; unticking drops queued bids.
+    replayBiddingCheckbox = CreateFrame("CheckButton", "AHSimReplayBiddingCheckbox", settings,
+        "UICheckButtonTemplate")
+    replayBiddingCheckbox:SetPoint("TOPLEFT", 0, -y)
+    _G["AHSimReplayBiddingCheckboxText"]:SetText("Replay Bidding (the Replay bot bids and outbids)")
+    replayBiddingCheckbox:SetScript("OnClick", function(self)
+        local on = self:GetChecked()
+        SetConfigAndSave("ReplayBidding", on and "1" or "0",
+            on and "Replay bidding on." or "Replay bidding off -- queued bids dropped.")
+    end)
+    y = y + 34
+
+    -- AuctionSim.Market.*: Bots apply at restart / Market Reload; Scale from the next step.
+    CreateLabel(settings, "Market Bots:", 4, -y)
+    marketBotsBox = CreateNumberBox(settings, 110, -y, 60, function(self)
+        SetConfigAndSave("MarketBots", self:GetText(), "Market Bots saved -- applies at restart or Market Reload.")
+    end, 4)
+    CreateLabel(settings, "Market Scale:", 200, -y)
+    marketScaleBox = CreateNumberBox(settings, 300, -y, 60, function(self)
+        local value = FormatScaleValue(self:GetText())
+        self:SetText(value)
+        SetConfigAndSave("MarketScale", value, "Market Scale saved.")
+    end, 6, true)
+    y = y + 30
+    settings:SetHeight(y)
+
+    local commandsHeader = CreateSectionHeader(page, "Market Commands")
+    commandsHeader:SetPoint("TOPLEFT", settings, "BOTTOMLEFT", 2, -10)
+
+    local commands = CreateFrame("Frame", nil, page)
+    commands:SetPoint("TOPLEFT", settings, "BOTTOMLEFT", 0, -(10 + HEADER_GAP))
+    commands:SetSize(LEFT_COLUMN_WIDTH, 1)
+    local cy = 0
+    local step = ROW_HEIGHT + 6
+    CreateCommandButton(
+        commands, "Market Status", 0, -cy, LEFT_COLUMN_WIDTH, function() AHSim:Send(OP.MARKETSTATUS) end)
+    cy = cy + step
+    CreateCommandButton(
+        commands, "Market Fill", 0, -cy, LEFT_COLUMN_WIDTH, function() AHSim:Send(OP.MARKETFILL) end)
+    cy = cy + step
+    CreateCommandButton(
+        commands, "Market Reload", 0, -cy, LEFT_COLUMN_WIDTH, function() AHSim:Send(OP.MARKETRELOAD) end)
+    cy = cy + step
+    -- Dry run first: the server reports what it would delete and, if anything, asks
+    -- (PURGEASK) for a second, confirming click.
+    CreateCommandButton(
+        commands, "Market Purge", 0, -cy, LEFT_COLUMN_WIDTH, function() AHSim:Send(OP.MARKETPURGE) end)
+    cy = cy + ROW_HEIGHT
+    commands:SetHeight(cy)
+end
+
 
 AHSim:RegisterHandler(OP.CONFIG, function(key, value)
     if key == "Enabled" then
@@ -610,6 +695,8 @@ AHSim:RegisterHandler(OP.CONFIG, function(key, value)
         if maxItemLevelBox then maxItemLevelBox:SetText(value) end
     elseif key == "Mode" then
         if marketModeCheckbox then marketModeCheckbox:SetChecked(value == "Market") end
+    elseif key == "ReplayBidding" then
+        if replayBiddingCheckbox then replayBiddingCheckbox:SetChecked(value == "1") end
     elseif key == "MarketBots" then
         if marketBotsBox then marketBotsBox:SetText(value) end
     elseif key == "MarketScale" then
@@ -771,3 +858,21 @@ AHSim:RegisterHandler(OP.PURGEASK, function(accounts, characters, auctions)
     StaticPopup_Show("AHSIM_CONFIRM_PURGE",
         sformat("%s account(s), %s character(s)", accounts or "?", characters or "?"), auctions or "?")
 end)
+
+-- Shown when Market Mode is ticked (the change is already saved). Yes asks the server
+-- for the stock 10 s restart; No leaves it for the GM's next restart.
+StaticPopupDialogs["AHSIM_RESTART_FOR_MARKET"] = {
+    text = "Restart the worldserver now to apply the change?",
+    button1 = "Yes",
+    button2 = "No",
+    OnAccept = function()
+        AHSim:Send(OP.RESTARTWORLD)
+    end,
+    OnCancel = function()  -- No (or Escape)
+        DEFAULT_CHAT_FRAME:AddMessage("Market mode cannot be initiated until the worldserver is restarted.")
+    end,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+    showAlert = true,
+}

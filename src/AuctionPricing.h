@@ -108,6 +108,11 @@ namespace AuctionPricing
     // from 1s, otherwise copper. A rolled amount is below minimumBid + 3 steps.
     uint32 BidRoundingStep(uint32 minimumBid);
 
+    // Replay bidding gate (AuctionSim.Replay.Bidding): whether a scan may consider a
+    // bid on an auction at all -- an outbid where a player holds the high bid, or an
+    // opening bid on a player's unbid auction -- and whether a queued bid may run.
+    bool MayBid(bool biddingEnabled, bool playerHoldsBid, bool openable);
+
     // No sniping: the bot never bids in an auction's last 30 minutes (the client's
     // "Short" time-left band), so a player it outbids always has time to answer.
     constexpr time_t kNoBidBeforeExpirySeconds = 1800;

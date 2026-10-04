@@ -118,6 +118,21 @@ public:
         std::vector<std::string> problems;
     };
     PurgeReport PurgeMarket(bool confirm);
+    // AuctionSim.Replay.Bidding, live: the next scan and the queue follow it at once.
+    void SetReplayBidding(bool enabled)
+    {
+        if (config)
+        {
+            config->replayBidding = enabled;
+        }
+        if (buyingService)
+        {
+            buyingService->SetBiddingEnabled(enabled);
+        }
+    }
+
+    // ".auctionsim market status" text, shared by the chat command and the addon.
+    std::vector<std::string> DescribeMarketStatus() const;
     // The GM-facing text of a purge, shared by the chat command and the addon.
     static std::vector<std::string> DescribePurge(PurgeReport const& report, bool confirm, bool marketMode);
 

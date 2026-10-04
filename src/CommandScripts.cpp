@@ -175,65 +175,11 @@ public:
 
     static bool HandleMarketStatusCommand(ChatHandler* handler)
     {
-        AuctionSim* sim = AuctionSim::instance();
-        if (!sim || !sim->IsMarketMode())
+        if (AuctionSim* sim = AuctionSim::instance())
         {
-            handler->SendSysMessage("AuctionSim is in Replay mode (AuctionSim.Mode = Replay).");
-            return true;
-        }
-        if (sim->IsMarketUnavailable())
-        {
-            handler->SendSysMessage(fmt::format(
-                "Market mode can't run: auctionsim_market.dat {} (file schema v{}, needs v{}).",
-                sim->MarketError(),
-                sim->MarketHaveVersion(),
-                sim->MarketNeedVersion()));
-            return true;
-        }
-        MarketService* market = sim->GetMarket();
-        if (!market)
-        {
-            handler->SendSysMessage(sim->IsMarketPurged()
-                    ? "Market mode: stopped by a purge until restart or \".auctionsim market reload\"."
-                    : "Market mode: data loaded, market not running (module disabled?).");
-            return true;
-        }
-        if (!market->IsReady())
-        {
-            handler->SendSysMessage(fmt::format("Market mode: setting up sellers -- {}", market->SetupNote()));
-            return true;
-        }
-        handler->SendSysMessage(fmt::format(
-            "Market mode: scale {:g}, {} Alliance / {} Horde sellers, {} listing(s) waiting to post, buy queue {}.",
-            market->GetScale(),
-            market->BotsInUse(0),
-            market->BotsInUse(1),
-            market->PendingListings(),
-            sim->GetBuyQueue().size()));
-        for (size_t faction = 0; faction < Market::kFactions; ++faction)
-        {
-            MarketService::HouseStats const& stats = market->LastStats(faction);
-            handler->SendSysMessage(fmt::format(
-                "  last step, {}: {} listings seen, {} post events, {} created ({} carried), {} buyers, {} buys "
-                "queued, {} us",
-                faction == 0 ? "Alliance" : "Horde",
-                stats.listingsSeen,
-                stats.postEvents,
-                stats.listingsCreated,
-                stats.listingsCarried,
-                stats.buyers,
-                stats.buysQueued,
-                stats.micros));
-            MarketService::FillStatus fill = market->GetFillStatus(faction);
-            if (fill.running)
+            for (std::string const& line : sim->DescribeMarketStatus())
             {
-                handler->SendSysMessage(
-                    fmt::format("  fill running: {}/{} simulated steps", fill.stepsDone, fill.stepsTotal));
-            }
-            else if (fill.stepsTotal > 0)
-            {
-                handler->SendSysMessage(fmt::format(
-                    "  last fill: {} listings queued ({} us of simulation)", fill.result, fill.micros));
+                handler->SendSysMessage(line);
             }
         }
         return true;

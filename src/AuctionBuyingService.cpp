@@ -76,8 +76,36 @@ void AuctionBuyingService::ConsiderForPurchase(
     _queuedAuctionIds.insert(auction->Id);
 }
 
+void AuctionBuyingService::SetBiddingEnabled(bool enabled)
+{
+    _biddingEnabled = enabled;
+    if (enabled)
+    {
+        return;
+    }
+    size_t before = _queue.size();
+    _queue.erase(std::remove_if(_queue.begin(), _queue.end(),
+                     [this](QueuedPurchase const& entry) {
+                         if (entry.action != QueuedPurchase::Action::Bid)
+                         {
+                             return false;
+                         }
+                         _queuedAuctionIds.erase(entry.auctionId);
+                         return true;
+                     }),
+        _queue.end());
+    if (_queue.size() != before)
+    {
+        LOG_INFO("module", "AuctionSim: Replay bidding off -- dropped {} queued bid(s)", before - _queue.size());
+    }
+}
+
 void AuctionBuyingService::ConsiderForBid(AuctionEntry* auction, BidLimits const& limits)
 {
+    if (!_biddingEnabled)
+    {
+        return;
+    }
     if (_queuedAuctionIds.count(auction->Id) > 0)
     {
         return;  // already queued (as a buyout or a bid) -- one terminal action per auction
@@ -224,7 +252,10 @@ void AuctionBuyingService::Execute(QueuedPurchase const& entry)
 {
     if (entry.action == QueuedPurchase::Action::Bid)
     {
-        PlaceBid(entry);
+        if (_biddingEnabled)
+        {
+            PlaceBid(entry);
+        }
     }
     else
     {

@@ -66,6 +66,8 @@ ASConfig::ASConfig(std::string const& filepath, bool& outLoaded)
     this->maxRequiredLevel = sConfigMgr->GetOption<uint32>("AuctionSim.MaxRequiredLevel", 0);
     this->maxItemLevel = sConfigMgr->GetOption<uint32>("AuctionSim.MaxItemLevel", 0);
 
+    LoadReplayBidding();
+
     std::string mode = sConfigMgr->GetOption<std::string>("AuctionSim.Mode", "Replay");
     if (!ParseMode(mode, this->marketMode))
     {
@@ -188,6 +190,39 @@ ASConfig::ASConfig(std::string const& filepath, bool& outLoaded)
         depthProfiles);
 
     LoadMasks();
+}
+
+bool ASConfig::ParseReplayBidding(std::string_view text, bool& out)
+{
+    std::string lower;
+    for (char c : text)
+    {
+        if (c != ' ' && c != '\t' && c != '\r' && c != '"')
+        {
+            lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+    }
+    if (lower.empty() || lower == "1" || lower == "true" || lower == "yes")
+    {
+        out = true;
+        return true;
+    }
+    if (lower == "0" || lower == "false" || lower == "no")
+    {
+        out = false;
+        return true;
+    }
+    return false;
+}
+
+void ASConfig::LoadReplayBidding()
+{
+    std::string raw = sConfigMgr->GetOption<std::string>("AuctionSim.Replay.Bidding", "", false);
+    if (!ParseReplayBidding(raw, this->replayBidding))
+    {
+        LOG_ERROR("module", "AuctionSim: AuctionSim.Replay.Bidding '{}' is not 0 or 1; bidding stays on", raw);
+        this->replayBidding = true;
+    }
 }
 
 bool ASConfig::ParseMode(std::string_view text, bool& outMarket)

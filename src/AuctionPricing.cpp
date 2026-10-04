@@ -358,6 +358,11 @@ namespace AuctionPricing
         return RollBuyTime(expireTime - kNoBidBeforeExpirySeconds, now);
     }
 
+    bool MayBid(bool biddingEnabled, bool playerHoldsBid, bool openable)
+    {
+        return biddingEnabled && (playerHoldsBid || openable);
+    }
+
     bool IsWithinLevelCap(uint32 itemRequiredLevel, uint32 itemLevel, uint32 maxRequiredLevel, uint32 maxItemLevel)
     {
         bool requiredLevelOk = maxRequiredLevel == 0 || itemRequiredLevel <= maxRequiredLevel;
