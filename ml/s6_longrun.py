@@ -8,6 +8,8 @@ reports per week, per faction:
   listings     auctions up (the whole house)
   items        items with something up
   price        median over items of ln(median price / reference): 0 = at reference
+  p99          99th percentile over items of ln(median price / reference): a runaway minority shows here
+               long before it moves a median
   cheapest     median over items of ln(cheapest price / reference)
   spread       median over items of cheapest / median
   at_floor     share of items whose cheapest listing sits at the vendor-price floor
@@ -33,7 +35,8 @@ from common import OUT
 
 S6 = OUT / "s6"
 # Metric -> (kind, tolerance): "log" metrics compare by difference of logs/levels, "rel" by ratio.
-TOLERANCE = {"listings": ("rel", 0.10), "items": ("rel", 0.10), "price": ("diff", 0.10), "cheapest": ("diff", 0.10),
+TOLERANCE = {"listings": ("rel", 0.10), "items": ("rel", 0.10), "price": ("diff", 0.10), "p99": ("diff", 0.25),
+             "cheapest": ("diff", 0.10),
              "spread": ("diff", 0.05), "at_floor": ("diff", 0.03), "vol": ("rel", 0.20), "sold": ("rel", 0.10),
              "sold_per_buyer": ("diff", 0.03), "spent_g": ("rel", 0.10)}
 
@@ -68,6 +71,7 @@ def weekly(daily, items):
     cum = [c for c in days.columns if c.endswith("_cum")]
     days = days.with_columns([pl.col(c).diff().alias(c[:-4]) for c in cum])
     w = (d.group_by("week").agg(pl.col("price").median(), pl.col("cheapest").median(), pl.col("spread").median(),
+                                p99=pl.col("price").quantile(0.99),
                                 at_floor=pl.col("at_floor").mean())
          .join(per_item_week.group_by("week").agg(pl.col("vol").median()), on="week")
          .join(days.group_by("week").agg(pl.col("listings").median(), pl.col("items").median(),
