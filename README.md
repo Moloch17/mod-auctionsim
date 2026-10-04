@@ -230,19 +230,5 @@ This window.
 - `.auctionsim market status` shows the sellers in use, the last step's numbers and the work still queued; `.auctionsim market reload` re-reads `auctionsim.conf` and the data file. Without a current `auctionsim_market.dat` the module refuses to run in Market mode and tells GMs at login.
 - Cost: one pass over each house per 30 minutes; at Scale 0.1 a step's arithmetic takes about 0.5 ms per house, and auctions are created at most 100 per world tick.
 
-### Version notices
-
-After a module update, the Results box (and a GM's chat at login) may show:
-
-- **auctionsim.conf is out of date**: your config is missing keys the new version added. A current
-  `auctionsim.conf.dist` is kept in `etc/modules/`; copy the new keys into your `auctionsim.conf`. Until you do, the
-  module runs on defaults for the missing keys. It never edits `auctionsim.conf` itself.
-- **auctionsim.dat is out of date**: the data file's format changed. Pull the latest changes and rebuild the module;
-  the current `auctionsim.dat` ships with the module and is redeployed on build. The module has no price data until
-  then.
-- **auctionsim_market.dat can't be used**: Market mode is on but its data file is missing or from another format
-  version. Rebuild the module to redeploy it, or switch back to Replay.
-- **addon / module version mismatch**: the addon and the server module ship as a pair. Update whichever the message
-  says is older.
 
 <img src="images/addon.png">
