@@ -35,7 +35,8 @@ Policy context bins, used by `POLICY`:
   edges `-1.0, -0.5, -0.25, -0.1, 0, 0.1, 0.25, 0.5, 1.0` → 0..9 (below -1.0 → 0, ≥ 1.0 → 9)
 
 Quantile sampling (`POLICY`, `STACK`): 7 stored quantiles at p = 0.02, 0.10, 0.25, 0.50, 0.75, 0.90, 0.98. Draw
-`u ~ U(0,1)`; for u between two stored p, interpolate linearly; below 0.02 or above 0.98 use the end value.
+`u ~ U(DRAW_LO, DRAW_HI)` with DRAW_LO = 0.05 and DRAW_HI = 0.95 (the tails beyond are real overpricers and typos;
+drawn, one would put a wall of 10x listings up); for u between two stored p, interpolate linearly.
 
 ## Sections
 
@@ -102,11 +103,27 @@ Every step of `dt` hours (module: its 30-minute timer, dt = 0.5), per faction ho
 1. **Posts.** For each basket row, events ~ Poisson(rateH × supplyScale × Market.Scale × dt), posted as bot
    `bot mod N` (so the market's volume doesn't depend on N). For each event: count listings, draw stack from
    `STACK` and price from `POLICY` with the row's `type`, using the house's current state for the item (all owners,
-   players included), floor at `vendor` and the `CRAFT` floor, duration from `tl4`. Deposit as the core charges it.
+   players included), then apply **price memory** (below), then floor at `vendor` and the `CRAFT` floor; duration
+   from `tl4`. Deposit as the core charges it.
 2. **Buyers.** For each item, arrivals ~ Poisson(buyersH × demandScale × Market.Scale × weekday × dt). Each draws a
    reservation and buys the cheapest listing with buyout ≤ reservation, whole, whoever owns it (players' listings
    included: that is how players sell to the market); none → it leaves.
 3. Expiry is the core's.
+
+### Price memory
+
+Real sellers price an item about where they priced it last; independent draws per post made one bot list the same
+item at 1.7g and 21.7g. Each house keeps, per (posting bot, item), the per-unit price of that bot's last post of it and
+when it was made. For a post with fresh draw `p` (after `POLICY`, before the floors):
+
+- remembered price `m`: the memory if it is younger than MEMORY_HOURS = 72; otherwise the bot's cheapest own
+  listing of the item up on the house (survives restarts and fills); otherwise none;
+- price = `p` when there is no `m`, else `exp(MEMORY_WEIGHT * ln m + (1 - MEMORY_WEIGHT) * ln p)` with
+  MEMORY_WEIGHT = 0.75 -- consistent, yet it follows the market a quarter of the way per post;
+- then the vendor and `CRAFT` floors; the memory stores the final price and the step's time.
+
+The memory is runtime state, not in the file; it is lost on restart (the own-listing fallback covers that). A fill's
+simulation keeps its own memory, starting from the sellers' listings already up.
 
 ## Fill (immediate full population)
 
