@@ -82,29 +82,6 @@ Ticking or unticking Market Mode offers to restart the worldserver, since a mode
 - **Run Tests**: run the module's built-in self-tests. Output goes to the Results box.
 - **Set Bot Char**: choose which character the bot uses (see step 2).
 - **Help**: this window.
-
-## Version notices
-
-After a module update, the Results box (and a GM's chat at login) may show:
-
-- **auctionsim.conf is out of date**: your config is missing keys the new version added. A current
-  `auctionsim.conf.dist` is kept in `etc/modules/`; copy the new keys into your `auctionsim.conf`. Until you do, the
-  module runs on defaults for the missing keys. It never edits `auctionsim.conf` itself.
-- **auctionsim.dat is out of date**: the data file's format changed. Pull the latest changes and rebuild the module;
-  the current `auctionsim.dat` ships with the module and is redeployed on build. The module has no price data until
-  then.
-- **auctionsim_market.dat can't be used**: Market mode is on but its data file is missing or from another format
-  version. Rebuild the module to redeploy it, or switch back to Replay.
-- **addon / module version mismatch**: the addon and the server module ship as a pair. Update whichever the message
-  says is older.
-
-Each notice shows once per version, so a fixed problem stops repeating.
-
-## Notes
-
-- Auction-house mail to the bot, and to every market seller, is discarded automatically. Other mail to them, from a
-  player or a GM, is delivered as usual and returns to its sender when it expires.
-- Everything set here is written to `auctionsim.conf`, so it survives a restart.
 ]]
 
 -- Text for the EXPERIMENTAL FEATURES tab's Help button (same format as above).
