@@ -35,10 +35,15 @@ learned from Warmane - Lordaeron:
   the first time Market mode starts, on accounts AHSIMMKTA01, AHSIMMKTA02, ...
   (Alliance) and AHSIMMKTH01, ... (Horde), ten characters per account. Nobody
   can log into them. Names already taken on your realm are skipped.
-- Posting. Every 30 minutes each seller posts the items it is known for, priced
-  against the cheapest listing of the same item already up (players' listings
-  included), never below the vendor price, and for crafted goods never below
-  what the reagents cost. Durations, deposits and expiry are the game's own.
+- Posting. Each seller has its own list of items, taken from what real sellers
+  of its kind posted on Lordaeron, with a posting rate for each item (Trade
+  Goods for some sellers, glyphs or gear for others). Every 30 minutes the
+  module rolls, item by item, whether the seller posts it this time, so a busy
+  item may go up several times a day and a rare one once a week; one item is
+  usually spread over one or two sellers. A post is priced against the cheapest
+  listing of the same item already up (players' listings included), never
+  below the vendor price, and for crafted goods never below what the reagents
+  cost. Durations, deposits and expiry are the game's own.
 - Buyers. Buyers arrive for each item at the rates seen on Lordaeron (with a
   weekday pattern), each willing to pay up to some price, and buy the cheapest
   listing at or under it - whoever listed it. That is how players sell to the
@@ -58,15 +63,16 @@ Controls
 --------
 Market Mode (checkbox)
   Switches between Replay (unticked) and Market (ticked). The change is saved
-  at once but only takes effect when the worldserver restarts. Ticking it asks
-  "Restart the worldserver now to apply the change?":
+  at once but only takes effect when the worldserver restarts. Ticking or
+  unticking it asks "Restart the worldserver now to apply the change?":
   - Yes restarts the server the standard way: a 10 second countdown that
     players see, like ".server restart 10". The server only comes back by
     itself if whatever runs it restarts the process (a Docker restart policy, a
     service manager or the restarter script). Refused if a shutdown or restart
     is already pending.
-  - No leaves it for your next restart.
-  Unticking it (back to Replay) is saved the same way and also needs a restart.
+  - No leaves it for your next restart and says so in chat ("Market mode cannot
+    be initiated until the worldserver is restarted.", or "Replay mode ..." when
+    unticking).
 
 Replay Bidding (checkbox)
   Whether the Replay bot bids. Ticked (the default), it outbids players who

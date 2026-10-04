@@ -781,8 +781,10 @@ function AHSim.BuildExperimentalPage(page)
         SetConfigAndSave("Mode", on and "Market" or "Replay",
             (on and "Market" or "Replay") .. " mode saved -- restart the worldserver to switch.")
         UpdateReplayBiddingState()
-        if on then
-            StaticPopup_Show("AHSIM_RESTART_FOR_MARKET")  -- saved either way; Yes restarts now
+        -- Saved either way; Yes restarts now, No names the mode still waiting for it.
+        local popup = StaticPopup_Show("AHSIM_RESTART_FOR_MARKET")
+        if popup then
+            popup.data = on and "Market" or "Replay"
         end
     end)
 
@@ -1020,8 +1022,9 @@ AHSim:RegisterHandler(OP.PURGEASK, function(accounts, characters, auctions)
         sformat("%s account(s), %s character(s)", accounts or "?", characters or "?"), auctions or "?")
 end)
 
--- Shown when Market Mode is ticked (the change is already saved). Yes asks the server
--- for the stock 10 s restart; No leaves it for the GM's next restart.
+-- Shown whenever Market Mode is ticked or unticked (the change is already saved). Yes
+-- asks the server for the stock 10 s restart; No leaves it for the GM's next restart.
+-- self.data is the mode just chosen ("Market" or "Replay").
 StaticPopupDialogs["AHSIM_RESTART_FOR_MARKET"] = {
     text = "Restart the worldserver now to apply the change?",
     button1 = "Yes",
@@ -1029,8 +1032,9 @@ StaticPopupDialogs["AHSIM_RESTART_FOR_MARKET"] = {
     OnAccept = function()
         AHSim:Send(OP.RESTARTWORLD)
     end,
-    OnCancel = function()  -- No (or Escape)
-        DEFAULT_CHAT_FRAME:AddMessage("Market mode cannot be initiated until the worldserver is restarted.")
+    OnCancel = function(self)  -- No (or Escape)
+        DEFAULT_CHAT_FRAME:AddMessage(
+            (self.data or "Market") .. " mode cannot be initiated until the worldserver is restarted.")
     end,
     timeout = 0,
     whileDead = true,
