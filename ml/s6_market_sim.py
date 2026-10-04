@@ -55,6 +55,14 @@ DRAW_HI = float(_os.environ.get("ML_DRAW_HI", DRAW_HI))
 # ML_CEILING override for experiments). Without them a thin item's price ratcheted up without limit.
 ANCHOR = float(_os.environ.get("ML_ANCHOR", "3"))    # MARKET_FORMAT.md "Reference anchor"
 CEILING = float(_os.environ.get("ML_CEILING", "10"))
+# Player buyer (MARKET_FORMAT.md): players' listings get their own chance to sell. Only the stage-7 agent is a player
+# here; the warm-start owners stand in for Lordaeron's sellers. ML_PLAYER_* override the realm settings.
+PLAYER_SELL_HOURS = float(_os.environ.get("ML_PLAYER_SELL_HOURS", "24"))
+PLAYER_LIQUIDITY = float(_os.environ.get("ML_PLAYER_LIQUIDITY", "0.5"))
+PLAYER_QUALITY_BONUS = _os.environ.get("ML_PLAYER_QUALITY_BONUS", "0") == "1"
+PLAYER_GOLD_PER_DAY = float(_os.environ.get("ML_PLAYER_GOLD_PER_DAY", "0"))
+LIQUID_BUYERS_H = 0.5
+QUALITY_FACTOR = {1: 1.0, 2: 1.5, 3: 2.5, 4: 4.0}  # 5+ -> 4; greys (0) are never bought
 CUT, DEPOSIT_PER_12H, MIN_DEPOSIT = 0.05, 0.15, 100
 TLEFT_MIN_HOURS = {1: 0.0, 2: 0.5, 3: 2.0, 4: 12.0}
 SNAPSHOT_HOUR, LIQUID_UNITS = 20, 20
@@ -129,6 +137,26 @@ def run(market_path, faction_name, window, scale, n_bots, days, burn_in, demand_
     vendor = np.array([m["item"][i][4] for i in items], dtype=float)
     buyers_h = np.array([m["item"][i][5] for i in items])
     curve = np.array([m["curve"].get(c, m["curve"][-1]) for c in cls])
+    quality_of = dict(pl.read_parquet(OUT / "item_template.parquet", columns=["item", "quality"]).iter_rows())
+    quality = np.array([quality_of.get(int(i), 1) for i in items])
+    qfactor = np.array([QUALITY_FACTOR.get(min(int(q), 4), 0.0) if PLAYER_QUALITY_BONUS else 1.0 for q in quality])
+    liquidity = np.minimum(1.0, (buyers_h * qfactor / LIQUID_BUYERS_H) ** PLAYER_LIQUIDITY)
+    player_h0 = -math.log(0.05) / PLAYER_SELL_HOURS if PLAYER_SELL_HOURS > 0 else 0.0
+    player_paid = []  # (hour, gold) the player buyer paid the agent: the per-character 24 h limit
+    # Lowest seller price per item over the last 24 h, as two 12 h buckets: buying out the cheapest seller copy
+    # must not raise the market price the player buyer pays (a flipper made +1.6% on turnover otherwise).
+    seller_low = [np.full(len(m["item"]), np.inf), np.full(len(m["item"]), np.inf)]
+    seller_low_bucket = [0]
+
+    def willing(i, r):
+        w = list(curve[i]) + [0.0]
+        for b in range(9):
+            lo, hi = CURVE_EDGES[b], CURVE_EDGES[b + 1]
+            if r < lo:
+                return w[b] if b else 1.0
+            if r < hi:
+                return w[b] - (w[b] - w[b + 1]) * (r - lo) / (hi - lo)
+        return 0.0
     mass = np.clip(curve - np.concatenate([curve[:, 1:], np.zeros((n_items, 1))], axis=1), 0, None)
     cum = np.cumsum(mass / np.maximum(mass.sum(axis=1, keepdims=True), 1e-12), axis=1)
     weekday = np.array([m["weekday"].get(c, m["weekday"].get(-1, np.ones(7))) for c in cls])
@@ -268,6 +296,15 @@ def run(market_path, faction_name, window, scale, n_bots, days, burn_in, demand_
             for k in L:
                 L[k] = np.concatenate([L[k], np.array(new[k], dtype=L[k].dtype)])
 
+        # Track each item's lowest seller price (every step, after the bots post, before anyone buys).
+        if agent is not None and player_h0 > 0:
+            bucket = int(now // 12)
+            if bucket != seller_low_bucket[0]:
+                seller_low[0], seller_low[1] = seller_low[1], np.full(n_items, np.inf)
+                seller_low_bucket[0] = bucket
+            others = L["owner"] != agent_owner
+            np.minimum.at(seller_low[1], L["item"][others], L["unit"][others])
+
         # A player (stage 7): buys whole listings at their buyout, then posts.
         if agent is not None:
             buys, posts = agent.step({"now": now, "item": L["item"], "unit": L["unit"], "count": L["count"],
@@ -328,6 +365,39 @@ def run(market_path, faction_name, window, scale, n_bots, days, burn_in, demand_
                 mask = np.ones(len(L["item"]), dtype=bool)
                 mask[s] = False
                 keep(mask)
+
+        # Player buyer: each player listing its own chance, set by the realm's settings.
+        if agent is not None and player_h0 > 0:
+            mine = np.flatnonzero(L["owner"] == agent_owner)
+            if len(mine):
+                sellers_min = np.minimum(seller_low[0], seller_low[1])
+                bought = []
+                while player_paid and player_paid[0][0] <= now - 24:
+                    player_paid.pop(0)
+                paid_24h = sum(g for _, g in player_paid)
+                for k in mine:
+                    i = L["item"][k]
+                    if quality[i] == 0 or ref[i] <= 0:
+                        continue
+                    mprice = min(ref[i], sellers_min[i])
+                    r = L["unit"][k] / mprice
+                    f = 1.0 if r <= 1 else min(1.0, max(0.0, willing(i, r) / max(willing(i, 1.0), 1e-9)))
+                    if rng.random() >= 1 - math.exp(-player_h0 * liquidity[i] * f * DT):
+                        continue
+                    pay = L["unit"][k] * L["count"][k]
+                    if PLAYER_GOLD_PER_DAY > 0 and paid_24h + pay / 10000 > PLAYER_GOLD_PER_DAY:
+                        continue
+                    paid_24h += pay / 10000
+                    player_paid.append((now, pay / 10000))
+                    bought.append(k)
+                    agent.gold += pay * (1 - CUT) + L["dep"][k]
+                    agent.sold_units += float(L["count"][k])
+                    agent.player_buyer_sales = getattr(agent, "player_buyer_sales", 0) + 1
+                    tot["player_paid"] += pay
+                if bought:
+                    mask = np.ones(len(L["item"]), dtype=bool)
+                    mask[bought] = False
+                    keep(mask)
 
         if int(clock // 3600) % 24 == SNAPSHOT_HOUR and (clock % 3600) < DT * 3600:
             snap = (pl.DataFrame({"item": items[L["item"]], "count": L["count"], "unit": L["unit"]}).sort("unit")

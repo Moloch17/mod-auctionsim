@@ -152,8 +152,12 @@ market seller nor the buyer bot) of an item with an `ITEM` row and `ref > 0`, th
 queued, and within the vendor guard: never above the vendor's buy price for an item vendors sell):
 
 - **Never greys:** item quality 0 is never bought.
-- **Market price** `m` = the lower of `ref` and the cheapest market-seller listing of the item up (per unit). A
-  player buying a seller's copy and relisting it is never paid more than that copy cost, and loses the AH cut.
+- **Market price** `m` = the lower of `ref` and the lowest market-seller price per unit seen for the item over the
+  last 24 hours. Each house records every step, after the sellers post and before any buying, each item's cheapest
+  seller listing into two 12-hour buckets (current and previous; the older is dropped when a new one starts); the
+  lowest seen is the minimum of both. Using what is up *now* let a player buy out the cheapest seller copy, which
+  raised "the cheapest", and relist at the new market price: a flipper made +1.6% of turnover. With the 24-hour low,
+  a bought-out copy still sets `m`, so flipping loses the AH cut.
 - **Base rate** `h0 = -ln(0.05) / PlayerSellHours` per hour: at full liquidity 95% of listings at `m` sell within
   PlayerSellHours.
 - **Liquidity** `L = min(1, (b / LIQUID_BUYERS_H)^PlayerLiquidity)` with LIQUID_BUYERS_H = 0.5 and `b` = the item's
