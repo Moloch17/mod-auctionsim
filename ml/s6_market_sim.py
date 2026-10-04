@@ -280,7 +280,10 @@ def run(market_path, faction_name, window, scale, n_bots, days, burn_in, demand_
                     .group_by("item").agg(units=pl.col("count").sum(), min_unit=pl.col("unit").min(),
                                           med_unit=pl.col("unit").filter(
                                               pl.col("count").cum_sum() >= pl.col("count").sum() / 2).first()))
-            daily.append(snap.with_columns(day=pl.lit(int(now // 24)), listings=pl.lit(len(L["item"]))))
+            # Running totals ride along, so a long run can be read day by day (s6_longrun.py).
+            daily.append(snap.with_columns(
+                day=pl.lit(int(now // 24)), listings=pl.lit(len(L["item"])),
+                **{f"{k}_cum": pl.lit(float(tot[k])) for k in ("posted", "sold", "buyers", "spent", "floored")}))
 
     if not write:
         return {"type_gold": dict(type_gold), "totals": dict(tot), "days": days,
