@@ -318,37 +318,145 @@ function AHSim.ShowSetBotCharPopup()
     setBotCharInput:SetFocus()
 end
 
+-- Help text renderer. Help.lua is a small Markdown subset (see its header): headings,
+-- one level of nested bullets, **highlights** and `commands`. Each paragraph, heading
+-- and list item becomes its own wrapped FontString, so headings stand out, bullets get
+-- a hanging indent and the text flows to the window's width instead of keeping the
+-- source's line breaks.
+local HELP_STYLES = {
+    h1 = {font = "GameFontNormalHuge", before = 0, after = 12},
+    h2 = {font = "GameFontNormalLarge", before = 18, after = 8, rule = true},
+    h3 = {font = "GameFontNormal", before = 12, after = 4},
+    p = {font = "GameFontHighlight", before = 0, after = 9},
+    li = {font = "GameFontHighlight", before = 0, after = 5},
+}
+local HELP_BULLET_INDENT, HELP_BULLET_GAP = 16, 14
+local HELP_LINE_SPACING = 2
+
+local function TrimHelpLine(line)
+    return (line:match("^%s*(.-)%s*$"))
+end
+
+-- Blocks in reading order: {kind = "h1"|"h2"|"h3"|"p"|"li", level = 1|2, text = ...}.
+local function ParseHelp(text)
+    local blocks, current = {}, nil
+    local function flush()
+        if current then
+            blocks[#blocks + 1] = current
+            current = nil
+        end
+    end
+    for line in (text .. "\n"):gmatch("(.-)\r?\n") do
+        local hashes, heading = line:match("^(#+)%s+(.*)$")
+        local indent, item = line:match("^(%s*)%-%s+(.*)$")
+        if line:match("^%s*$") then
+            flush()
+        elseif hashes then
+            flush()
+            blocks[#blocks + 1] = {kind = "h" .. math.min(#hashes, 3), text = TrimHelpLine(heading)}
+        elseif item then
+            flush()
+            current = {kind = "li", level = #indent >= 2 and 2 or 1, text = TrimHelpLine(item)}
+        elseif current then
+            current.text = current.text .. " " .. TrimHelpLine(line)
+        else
+            current = {kind = "p", text = TrimHelpLine(line)}
+        end
+    end
+    flush()
+    return blocks
+end
+
+-- **text** in gold, `text` in light blue.
+local function HelpInline(text)
+    text = text:gsub("%*%*(.-)%*%*", "|cffffd100%1|r")
+    text = text:gsub("`(.-)`", "|cff9fd8ff%1|r")
+    return text
+end
+
+-- Builds the blocks into `body` once; returns layout(width) -> content height.
+local function BuildHelpBlocks(body, text)
+    local items = {}
+    for _, block in ipairs(ParseHelp(text)) do
+        local style = HELP_STYLES[block.kind]
+        local fs = WrapText(body:CreateFontString(nil, "ARTWORK", style.font))
+        fs:SetSpacing(HELP_LINE_SPACING)
+        fs:SetText(HelpInline(block.text))
+        local item = {block = block, style = style, fs = fs}
+        if block.kind == "li" then
+            item.bullet = body:CreateFontString(nil, "ARTWORK", style.font)
+            item.bullet:SetText(block.level == 1 and "\226\128\162" or "\226\128\147")  -- bullet / en dash
+        end
+        if style.rule then
+            item.rule = body:CreateTexture(nil, "ARTWORK")
+            item.rule:SetTexture(1, 0.82, 0, 0.25)
+            item.rule:SetHeight(1)
+        end
+        items[#items + 1] = item
+    end
+
+    return function(width)
+        local y, previous = 0, nil
+        for i, item in ipairs(items) do
+            local block, style = item.block, item.style
+            if i > 1 then
+                y = y + style.before
+                if previous == "li" and block.kind ~= "li" then
+                    y = y + 4  -- a little air after a list
+                end
+            end
+            local x = 0
+            if block.kind == "li" then
+                x = (block.level - 1) * HELP_BULLET_INDENT
+                item.bullet:ClearAllPoints()
+                item.bullet:SetPoint("TOPLEFT", x, -y)
+                x = x + HELP_BULLET_GAP
+            end
+            item.fs:ClearAllPoints()
+            item.fs:SetPoint("TOPLEFT", x, -y)
+            item.fs:SetWidth(width - x)
+            y = y + item.fs:GetStringHeight()
+            if item.rule then
+                item.rule:ClearAllPoints()
+                item.rule:SetPoint("TOPLEFT", 0, -(y + 3))
+                item.rule:SetWidth(width)
+                y = y + 4
+            end
+            y = y + style.after
+            previous = block.kind
+        end
+        return y
+    end
+end
+
 -- Scrollable, movable help windows (text from Help.lua): the main Help and the
--- EXPERIMENTAL FEATURES tab's Help. The text wraps at the scroll area's width.
+-- EXPERIMENTAL FEATURES tab's Help.
 local helpFrames = {}
 local function BuildHelpPopup(name, titleText, bodyText)
     if helpFrames[name] then
         return helpFrames[name]
     end
 
-    local f = CreateModuleWindow(name, 520, 480, TITLE_PREFIX .. titleText, "FULLSCREEN_DIALOG")
+    local f = CreateModuleWindow(name, 580, 520, TITLE_PREFIX .. titleText, "FULLSCREEN_DIALOG")
 
     local scroll = CreateFrame("ScrollFrame", name .. "Scroll", f, "UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT", 12, -34)
-    scroll:SetPoint("BOTTOMRIGHT", -38, 42)
+    scroll:SetPoint("TOPLEFT", 18, -38)
+    scroll:SetPoint("BOTTOMRIGHT", -40, 46)
 
     local body = CreateFrame("Frame", name .. "Body", scroll)
     scroll:SetScrollChild(body)
 
-    local text = WrapText(body:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall"))
-    text:SetPoint("TOPLEFT", 0, 0)
-    text:SetText(bodyText or "Help.lua is missing or failed to load.")
-
+    local layoutBlocks = BuildHelpBlocks(body, bodyText or "Help.lua is missing or failed to load.")
     local function layout()
         local w = scroll:GetWidth()
         if w <= 0 then
             return
         end
         body:SetWidth(w)
-        text:SetWidth(w)
-        body:SetHeight(math.max(text:GetStringHeight() + 8, scroll:GetHeight()))
+        body:SetHeight(math.max(layoutBlocks(w - 6) + 10, scroll:GetHeight()))
     end
     scroll:SetScript("OnSizeChanged", layout)
+    f:HookScript("OnShow", layout)
     layout()
 
     local closeBtn = CreateCommandButton(f, "Close", 0, 0, 110, function() f:Hide() end)
