@@ -102,7 +102,7 @@ Ticking or unticking Market Mode offers to restart the worldserver, since a mode
 - **Set Bot Char**: choose which character the bot uses (see step 2).
 - **Help**: this window.
 
-## Experimental features
+# Experimental features
 
 Market mode and Replay Bidding are on the companion addon's **EXPERIMENTAL FEATURES** tab (at the bottom of the window), whose Help button shows this text. The technical details are in [Market mode internals](#market-mode-internals) below.
 
