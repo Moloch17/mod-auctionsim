@@ -73,57 +73,14 @@ In the "Listing Multipliers" grid on the right:
 
 6. EXPERIMENTAL FEATURES tab
 ----------------------------
-The second tab at the top of the window holds the features that work but may
-still change between releases: Market mode, its settings and commands, and
-Replay bidding.
-
-Replay Bidding (default on): whether the Replay bot bids. On, it outbids
-players and opens bidding on players' auctions as described above. Off, it
-never bids: no new bids, and bids already queued are dropped. Buyouts are
-unaffected. Takes effect from the next scan (AuctionSim.Replay.Bidding).
-
-"Market Mode" switches the module from replaying scanned prices to a market
-learned from Warmane - Lordaeron (auctionsim_market.dat). The change is saved at
-once but only takes effect when the worldserver restarts. Ticking it asks
-"Restart the worldserver now to apply the change?":
-- Yes restarts the server the stock way (a 10 second countdown players see,
-  like ".server restart 10"). The server only comes back by itself if the host
-  restarts the process - a Docker restart policy, a service manager or the
-  restarter script. Refused if a shutdown is already pending.
-- No leaves it for your next restart.
-Unticking it (back to Replay) is saved the same way and also needs a restart.
-
-In Market mode:
-- Named seller bots post the auctions; their names show as the seller in the
-  AH. The module creates their characters itself on first start, on accounts
-  AHSIMMKTA01.. (Alliance) and AHSIMMKTH01.. (Horde) that nobody can log into.
-  Names already taken on your realm are skipped.
-- Buyers buy the cheapest listing they find worth it - players' listings too,
-  which is how players sell to the market. The buys still go through the bot
-  character from step 2 and the queue.
-- Market Bots: sellers per faction (default 100). Applies at restart or with
-  "Market Reload".
-- Market Scale: market size as a fraction of Lordaeron's (default 0.1, about
-  6000 auctions per faction). Applies from the next step. Your realm's
-  population doesn't matter.
-- "Scan" on the main tab runs one market step.
-- If auctionsim_market.dat is missing or out of date the module refuses to run
-  and tells GMs at login; untick Market Mode to go back to Replay.
-
-Market commands on the tab:
-Market Status   Sellers in use, the last step's numbers, fill progress and
-                what is still waiting to post (".auctionsim market status").
-Market Fill     Fills the house at once, as if the sellers had been running for
-                the last 48 hours (".auctionsim market fill [alliance|horde]").
-                Auctions appear at up to 100 per server tick.
-Market Reload   Re-reads auctionsim.conf and auctionsim_market.dat and
-                re-resolves the sellers (".auctionsim market reload").
-Market Purge    Deletes the seller accounts, characters and auctions the module
-                created (".auctionsim market purge"). It first shows what it
-                would delete, then asks again. Bidders on a seller auction get
-                their gold back by mail. The market stops until a restart; with
-                Market Mode still on, the restart creates the sellers again, so
-                untick Market Mode first if you want them gone for good.
+The tab at the bottom of the window next to "Main" holds the features that work
+but may still change between releases: Market mode (named seller bots and
+buyers learned from a real market, instead of the Replay bot), its settings
+(Market Bots, Market Scale) and commands (Market Status, Fill, Reload, Purge),
+and Replay Bidding (whether the Replay bot bids). Ticking Market Mode offers to
+restart the worldserver at once, since a mode change needs a restart. Replay
+Bidding is greyed out while Market Mode is ticked. The tab's own Help button
+explains every control in detail.
 
 Button reference
 ----------------
@@ -166,4 +123,120 @@ Notes
   automatically. Other mail to them (from a player or a GM) is delivered as
   usual and returns to its sender when it expires.
 - Everything set here is written to auctionsim.conf, so it survives a restart.
+]]
+
+-- Text for the EXPERIMENTAL FEATURES tab's Help button (same format as above).
+AHSim.experimentalHelpText = [[
+AuctionSim - Experimental Features
+==================================
+
+The features on this tab work, but how they behave may still change between
+releases. Everything set here is saved to auctionsim.conf.
+
+
+Market mode
+-----------
+Normally (Replay mode) one bot character lists items at prices taken from real
+auction scans and buys what is cheap. Market mode replaces that with a market
+learned from Warmane - Lordaeron:
+
+- Named sellers. Each faction gets its own seller bots, and their names show as
+  the seller in the auction house. The module creates their characters itself
+  the first time Market mode starts, on accounts AHSIMMKTA01, AHSIMMKTA02, ...
+  (Alliance) and AHSIMMKTH01, ... (Horde), ten characters per account. Nobody
+  can log into them. Names already taken on your realm are skipped.
+- Posting. Every 30 minutes each seller posts the items it is known for, priced
+  against the cheapest listing of the same item already up (players' listings
+  included), never below the vendor price, and for crafted goods never below
+  what the reagents cost. Durations, deposits and expiry are the game's own.
+- Buyers. Buyers arrive for each item at the rates seen on Lordaeron (with a
+  weekday pattern), each willing to pay up to some price, and buy the cheapest
+  listing at or under it - whoever listed it. That is how players sell to the
+  market: list at a fair price and a buyer will come. Purchases go through the
+  bot character from the main tab's Set Bot Char and are spread over about 20
+  minutes.
+- The market data file. All of this comes from auctionsim_market.dat, which
+  ships with the module (data/) and is copied next to auctionsim.conf when the
+  module is built. If it is missing or from another format version, the module
+  refuses to run in Market mode and tells GMs at login.
+- Gold. The buyer bot is never charged. Gold enters the economy only when it
+  buys a player's listing. Everything paid to a seller bot is discarded, so gold
+  players spend on seller listings leaves the economy.
+
+
+Controls
+--------
+Market Mode (checkbox)
+  Switches between Replay (unticked) and Market (ticked). The change is saved
+  at once but only takes effect when the worldserver restarts. Ticking it asks
+  "Restart the worldserver now to apply the change?":
+  - Yes restarts the server the standard way: a 10 second countdown that
+    players see, like ".server restart 10". The server only comes back by
+    itself if whatever runs it restarts the process (a Docker restart policy, a
+    service manager or the restarter script). Refused if a shutdown or restart
+    is already pending.
+  - No leaves it for your next restart.
+  Unticking it (back to Replay) is saved the same way and also needs a restart.
+
+Replay Bidding (checkbox)
+  Whether the Replay bot bids. Ticked (the default), it outbids players who
+  bid on an auction and sometimes opens the bidding on a player's auction, as a
+  player would. Unticked, it never bids: it queues no new bids and drops the
+  bids it had already queued. Buying outright is unaffected. Takes effect at
+  once (from the next scan).
+  It only matters in Replay mode - Market mode never bids - so while Market
+  Mode is ticked the checkbox is greyed out and can't be changed. Its saved
+  value is kept for when you switch back to Replay, and the server refuses to
+  change it while Market Mode is on.
+
+Market Bots (box)
+  How many named sellers each faction gets (default 100), taken from the names
+  in the data file; fewer if names are taken. The market's size doesn't depend
+  on it, only how many names the posts are spread over. Applies at restart or
+  with Market Reload.
+
+Market Scale (box)
+  How big the market is, as a fraction of Lordaeron's (default 0.1, about 6000
+  auctions per faction; 1 is about 60000). Scales both posting and buying.
+  Your realm's population doesn't matter. Applies from the next market step.
+
+Market Status (button)  -  .auctionsim market status
+  Shows whether the market runs (and why not if it doesn't), the scale, the
+  sellers in use per faction, auctions still waiting to be posted, the buy
+  queue, the last step's numbers per house and fill progress.
+
+Market Fill (button)  -  .auctionsim market fill [alliance|horde]
+  Fills the auction house at once instead of waiting a day or two: it
+  simulates the last 48 hours of the market, with the auctions already up as
+  competition, and posts what the sellers would have up now, each with its
+  remaining time. It never adds more than a full house minus what the sellers
+  already have up, so a fill on a full house adds almost nothing. Auctions
+  appear at up to 100 per server tick. Both factions by default; the chat
+  command takes alliance or horde for one. Refused while the market isn't
+  running, its sellers are still being set up, or a fill is already running.
+
+Market Reload (button)  -  .auctionsim market reload
+  Re-reads auctionsim.conf (Market Bots, Market Scale, Replay Bidding) and
+  auctionsim_market.dat and restarts the market with them, without a server
+  restart. Only works when the server started in Market mode; switching modes
+  needs a restart. The buyer bot is reloaded too, which empties its buy queue.
+
+Market Purge (button)  -  .auctionsim market purge [confirm]
+  Removes everything Market mode created. The first click only reports what
+  would be deleted: the seller accounts and characters, their auctions (and how
+  many have bids) and their mail. If there is anything, a second popup asks
+  you to confirm. Confirmed (".auctionsim market purge confirm"), it:
+  - stops the market until a restart or Market Reload and drops the queued
+    market purchases;
+  - removes every seller auction - anyone who bid on one gets the bid back by
+    mail, as when an auction is cancelled;
+  - deletes the seller characters and the AHSIMMKT accounts the standard way.
+  It refuses entirely, deleting nothing, if a seller account holds a character
+  the module didn't create (levelled, played, wrong race or class, online) or
+  has GM access, and it never touches the buyer bot. With Market Mode still
+  ticked, the next restart creates the sellers again - untick it first if you
+  want them gone for good. Running it again finds nothing and says so.
+
+Help (button)
+  This window.
 ]]

@@ -241,6 +241,13 @@ namespace
         }
         if (key == "ReplayBidding")
         {
+            // Market mode never bids: the setting only matters in Replay, so it is kept as
+            // it is while Mode is Market (as saved, including a change not yet restarted).
+            if (modeChanged ? stagedMarketMode : config->marketMode)
+            {
+                SendError(target, "Replay Bidding only applies when Market Mode is off; it keeps its saved value.");
+                return;
+            }
             bool enabled = true;
             if (!ASConfig::ParseReplayBidding(valueStr, enabled) || valueStr.empty())
             {

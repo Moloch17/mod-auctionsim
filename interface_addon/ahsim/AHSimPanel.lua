@@ -71,8 +71,11 @@ local function CreateModuleWindow(name, width, height, titleText, strata)
     f:Hide()
     tinsert(UISpecialFrames, name)
 
+    -- between the borders and clear of the close button; one line, cut off if too long
     local title = f:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-    title:SetPoint("TOP", f, "TOP", 0, -16)
+    title:SetPoint("TOPLEFT", f, "TOPLEFT", 36, -16)
+    title:SetPoint("TOPRIGHT", f, "TOPRIGHT", -36, -16)
+    title:SetHeight(14)
     title:SetText(titleText)
 
     local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
@@ -88,7 +91,6 @@ local LEFT_COLUMN_WIDTH = 130
 local COLUMN_GAP = 20
 local HEADER_GAP = 18
 
-local TAB_BAR_HEIGHT = 30
 local RESULTS_HEIGHT = 130  -- viewport height; MAX_RESULT_LINES caps scrollback
 local MAX_RESULT_LINES = 200
 
@@ -98,7 +100,6 @@ local maxRequiredLevelBox, maxItemLevelBox, marketBotsBox, marketScaleBox
 local resultsLog                 -- ScrollingMessageFrame, created in BuildWindow
 local pendingResultLines = {}    -- lines logged before the window exists
 local setBotCharFrame, setBotCharInput
-local helpFrame
 
 -- A ScrollingMessageFrame keeps its own line buffer and renders each line on its
 -- own, so MAX_RESULT_LINES of scrollback works where a single giant FontString
@@ -149,9 +150,23 @@ local function FormatScaleValue(value)
     return (s:gsub("0+$", ""):gsub("%.$", ""))
 end
 
-local function CreateLabel(parent, text, x, y)
+-- Text that may be long wraps inside its width (set by the caller, from anchors or
+-- SetWidth) instead of running past its container; NonSpaceWrap breaks long tokens.
+local function WrapText(fs)
+    fs:SetJustifyH("LEFT")
+    fs:SetJustifyV("TOP")
+    fs:SetNonSpaceWrap(true)
+    return fs
+end
+
+-- One-row label beside an edit box: fixed width and height, so text that doesn't fit
+-- is cut off with "..." instead of running into the box.
+local function CreateLabel(parent, text, x, y, width)
     local fs = parent:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
     fs:SetPoint("TOPLEFT", x, y)
+    fs:SetSize(width, ROW_HEIGHT)
+    fs:SetJustifyH("LEFT")
+    fs:SetJustifyV("MIDDLE")
     fs:SetText(text)
     return fs
 end
@@ -167,10 +182,28 @@ local function CreateCellLabel(parent, text, x, y, w, h)
     return fs
 end
 
-local function CreateSectionHeader(parent, text)
+-- One-line header. The caller anchors its left edge; the right edge stops at
+-- `rightOf` (default: the parent), and its fixed height keeps it to one line.
+local function CreateSectionHeader(parent, text, rightOf)
     local fs = parent:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+    fs:SetHeight(14)
+    fs:SetJustifyH("LEFT")
     fs:SetText(text)
+    fs.rightOf = rightOf or parent
     return fs
+end
+
+-- Second anchor for a header: its right edge, so the text has a width to stay in.
+local function FitHeader(fs)
+    fs:SetPoint("RIGHT", fs.rightOf, "RIGHT", -2, 0)
+end
+
+-- A checkbox template label in a fixed column: one line that stops at the column edge.
+local function FitCheckLabel(textName, columnWidth)
+    local text = _G[textName]
+    text:SetWidth(columnWidth - 30)
+    text:SetHeight(16)
+    text:SetJustifyH("LEFT")
 end
 
 local function CreateNumberBox(parent, x, y, width, onEnter, maxLetters, allowDecimal)
@@ -205,6 +238,12 @@ local function CreateCommandButton(parent, label, x, y, width, onClick)
     btn:SetSize(width, ROW_HEIGHT)
     btn:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
     btn:SetText(label)
+    -- the label stays inside the button: one line, cut off with "..." if too long
+    local fs = btn:GetFontString()
+    if fs then
+        fs:SetWidth(width - 12)
+        fs:SetHeight(ROW_HEIGHT - 6)
+    end
     btn:SetScript("OnClick", onClick)
     return btn
 end
@@ -237,8 +276,7 @@ local function BuildSetBotCharPopup()
     local promptTop = 40
     local prompt = f:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
     prompt:SetWidth(POPUP_WIDTH - POPUP_MARGIN * 2)
-    prompt:SetJustifyH("LEFT")
-    prompt:SetJustifyV("TOP")
+    WrapText(prompt)
     prompt:SetPoint("TOPLEFT", POPUP_MARGIN, -promptTop)
     prompt:SetText(
         "Type in the character name that you want to use for the bot. Make sure the character is one " ..
@@ -280,26 +318,26 @@ function AHSim.ShowSetBotCharPopup()
     setBotCharInput:SetFocus()
 end
 
--- Scrollable, movable window showing AHSim.helpText (from Help.lua).
-local function BuildHelpPopup()
-    if helpFrame then
-        return
+-- Scrollable, movable help windows (text from Help.lua): the main Help and the
+-- EXPERIMENTAL FEATURES tab's Help. The text wraps at the scroll area's width.
+local helpFrames = {}
+local function BuildHelpPopup(name, titleText, bodyText)
+    if helpFrames[name] then
+        return helpFrames[name]
     end
 
-    local f = CreateModuleWindow("AHSimHelpFrame", 520, 480, TITLE_PREFIX .. "Help", "FULLSCREEN_DIALOG")
+    local f = CreateModuleWindow(name, 520, 480, TITLE_PREFIX .. titleText, "FULLSCREEN_DIALOG")
 
-    local scroll = CreateFrame("ScrollFrame", "AHSimHelpScroll", f, "UIPanelScrollFrameTemplate")
+    local scroll = CreateFrame("ScrollFrame", name .. "Scroll", f, "UIPanelScrollFrameTemplate")
     scroll:SetPoint("TOPLEFT", 12, -34)
     scroll:SetPoint("BOTTOMRIGHT", -38, 42)
 
-    local body = CreateFrame("Frame", "AHSimHelpBody", scroll)
+    local body = CreateFrame("Frame", name .. "Body", scroll)
     scroll:SetScrollChild(body)
 
-    local text = body:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    local text = WrapText(body:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall"))
     text:SetPoint("TOPLEFT", 0, 0)
-    text:SetJustifyH("LEFT")
-    text:SetJustifyV("TOP")
-    text:SetText(AHSim.helpText or "Help.lua is missing or failed to load.")
+    text:SetText(bodyText or "Help.lua is missing or failed to load.")
 
     local function layout()
         local w = scroll:GetWidth()
@@ -317,13 +355,22 @@ local function BuildHelpPopup()
     closeBtn:ClearAllPoints()
     closeBtn:SetPoint("BOTTOM", f, "BOTTOM", 0, 14)
 
-    helpFrame = f
+    helpFrames[name] = f
+    return f
+end
+
+local function ShowHelpPopup(name, titleText, bodyText)
+    local f = BuildHelpPopup(name, titleText, bodyText)
+    f:Show()
+    f:Raise()
 end
 
 function AHSim.ShowHelp()
-    BuildHelpPopup()
-    helpFrame:Show()
-    helpFrame:Raise()
+    ShowHelpPopup("AHSimHelpFrame", "Help", AHSim.helpText)
+end
+
+function AHSim.ShowExperimentalHelp()
+    ShowHelpPopup("AHSimExperimentalHelpFrame", "Experimental Features Help", AHSim.experimentalHelpText)
 end
 
 function AHSim.BuildWindow()
@@ -358,6 +405,7 @@ function AHSim.BuildWindow()
 
     local resultsHeader = CreateSectionHeader(panel, "Results")
     resultsHeader:SetPoint("BOTTOMLEFT", resultsBg, "TOPLEFT", 2, 4)
+    FitHeader(resultsHeader)
 
     resultsLog = CreateFrame("ScrollingMessageFrame", "AHSimResultsLog", resultsBg)
     resultsLog:SetPoint("TOPLEFT", resultsBg, "TOPLEFT", 8, -8)
@@ -380,38 +428,49 @@ function AHSim.BuildWindow()
     end
     pendingResultLines = {}
 
-    -- Two pages above the shared Results log, switched by the tab bar: the main
-    -- page and EXPERIMENTAL FEATURES.
+    -- Two pages above the shared Results log, switched by real tabs below the window
+    -- (stock CharacterFrame-style tabs, managed by PanelTemplates).
     local mainPage = CreateFrame("Frame", "AHSimMainPage", panel)
-    mainPage:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, -TAB_BAR_HEIGHT)
+    mainPage:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, 0)
     mainPage:SetPoint("BOTTOMRIGHT", resultsBg, "TOPRIGHT", 0, 20)
     local experimentalPage = CreateFrame("Frame", "AHSimExperimentalPage", panel)
     experimentalPage:SetAllPoints(mainPage)
     experimentalPage:Hide()
 
-    local tabs = {}
+    local pages = { mainPage, experimentalPage }
     local function SelectTab(index)
-        for i, tab in ipairs(tabs) do
+        PanelTemplates_SetTab(frame, index)
+        for i, page in ipairs(pages) do
             if i == index then
-                tab.page:Show()
-                tab.button:LockHighlight()
+                page:Show()
             else
-                tab.page:Hide()
-                tab.button:UnlockHighlight()
+                page:Hide()
             end
         end
     end
-    local tabWidths = { 150, 220 }
-    local tabX = 0
-    for i, def in ipairs({ { "Main", mainPage }, { "EXPERIMENTAL FEATURES", experimentalPage } }) do
-        local button = CreateCommandButton(panel, def[1], tabX, 0, tabWidths[i], function() SelectTab(i) end)
-        tabs[i] = { button = button, page = def[2] }
-        tabX = tabX + tabWidths[i] + 6
+    -- PanelTemplates finds the tabs by name: <frame name>Tab<n>.
+    local tabLabels = { "Main", "EXPERIMENTAL FEATURES" }
+    for i, label in ipairs(tabLabels) do
+        local tab = CreateFrame("Button", "AHSimFrameTab" .. i, frame, "CharacterFrameTabButtonTemplate")
+        tab:SetID(i)
+        tab:SetText(label)
+        PanelTemplates_TabResize(tab, 0)  -- as wide as its label
+        if i == 1 then
+            tab:SetPoint("TOPLEFT", frame, "BOTTOMLEFT", 12, 7)
+        else
+            tab:SetPoint("LEFT", _G["AHSimFrameTab" .. (i - 1)], "RIGHT", -16, 0)
+        end
+        tab:SetScript("OnClick", function(self)
+            SelectTab(self:GetID())
+            PlaySound("igCharacterInfoTab")
+        end)
     end
+    PanelTemplates_SetNumTabs(frame, #tabLabels)
     SelectTab(1)
 
     -- Left column: checkboxes + action buttons.
     local actionsHeader = CreateSectionHeader(mainPage, "Actions")
+    actionsHeader:SetWidth(LEFT_COLUMN_WIDTH - 2)
     actionsHeader:SetPoint("TOPLEFT", mainPage, "TOPLEFT", 2, 0)
 
     local leftColumn = CreateFrame("Frame", "AHSimLeftColumn", mainPage)
@@ -422,6 +481,7 @@ function AHSim.BuildWindow()
 
     enabledCheckbox = CreateFrame("CheckButton", "AHSimEnabledCheckbox", leftColumn, "UICheckButtonTemplate")
     enabledCheckbox:SetPoint("TOPLEFT", 0, -ly)
+    FitCheckLabel("AHSimEnabledCheckboxText", LEFT_COLUMN_WIDTH)
     _G["AHSimEnabledCheckboxText"]:SetText("Enabled")
     enabledCheckbox:SetScript("OnClick", function(self)
         local on = self:GetChecked()
@@ -431,6 +491,7 @@ function AHSim.BuildWindow()
 
     startupScanCheckbox = CreateFrame("CheckButton", "AHSimStartupScanCheckbox", leftColumn, "UICheckButtonTemplate")
     startupScanCheckbox:SetPoint("TOPLEFT", 0, -ly)
+    FitCheckLabel("AHSimStartupScanCheckboxText", LEFT_COLUMN_WIDTH)
     _G["AHSimStartupScanCheckboxText"]:SetText("Startup Scan")
     startupScanCheckbox:SetScript("OnClick", function(self)
         SetConfigAndSave("StartupScan", self:GetChecked() and "1" or "0")
@@ -465,6 +526,7 @@ function AHSim.BuildWindow()
     -- Right column: settings grid.
     local settingsHeader = CreateSectionHeader(mainPage, "Listing Multipliers")
     settingsHeader:SetPoint("TOPLEFT", leftColumn, "TOPRIGHT", COLUMN_GAP + 2, HEADER_GAP)
+    FitHeader(settingsHeader)
 
     local scrollFrame = CreateFrame("ScrollFrame", "AHSimScrollFrame", mainPage, "UIPanelScrollFrameTemplate")
     scrollFrame:SetPoint("TOPLEFT", leftColumn, "TOPRIGHT", COLUMN_GAP, 0)
@@ -475,12 +537,12 @@ function AHSim.BuildWindow()
 
     local y = 0
 
-    CreateLabel(content, "Max Required Level:", 4, -y)
+    CreateLabel(content, "Max Required Level:", 4, -y, 132)
     maxRequiredLevelBox = CreateNumberBox(content, 140, -y, 60, function(self)
         SetConfigAndSave("MaxRequiredLevel", self:GetText())
     end)
 
-    CreateLabel(content, "Max Item Level:", 230, -y)
+    CreateLabel(content, "Max Item Level:", 230, -y, 106)
     maxItemLevelBox = CreateNumberBox(content, 340, -y, 60, function(self)
         SetConfigAndSave("MaxItemLevel", self:GetText())
     end)
@@ -598,89 +660,187 @@ function AHSim.BuildWindow()
     AHSim.BuildExperimentalPage(experimentalPage)
 end
 
+-- Replay Bidding only matters in Replay mode: while Market Mode is ticked the box is
+-- greyed out and unclickable (its saved value is kept for a switch back), with a
+-- note saying why. Called on load from the server's settings and on every toggle.
+local REPLAY_BIDDING_NOTE = "Replay Bidding only applies when Market Mode is off."
+local replayBiddingNote
+local function UpdateReplayBiddingState()
+    if not replayBiddingCheckbox or not marketModeCheckbox then
+        return
+    end
+    local text = _G["AHSimReplayBiddingCheckboxText"]
+    if marketModeCheckbox:GetChecked() then
+        replayBiddingCheckbox:Disable()
+        text:SetTextColor(0.5, 0.5, 0.5)
+        if replayBiddingNote then
+            replayBiddingNote:SetText(REPLAY_BIDDING_NOTE)
+        end
+    else
+        replayBiddingCheckbox:Enable()
+        text:SetTextColor(NORMAL_FONT_COLOR.r, NORMAL_FONT_COLOR.g, NORMAL_FONT_COLOR.b)
+        if replayBiddingNote then
+            replayBiddingNote:SetText(" ")
+        end
+    end
+end
+
 -- EXPERIMENTAL FEATURES tab: Market mode, its settings and commands, and Replay
 -- bidding. Everything here works but may still change between releases.
+--
+-- The page is a ScrollFrame of stacked rows. Each row measures itself for the
+-- current width (wrapped text sets its height), so a long label pushes the rows
+-- below it down instead of overlapping them, and the scroll bar takes over if the
+-- whole tab ever outgrows the window.
 function AHSim.BuildExperimentalPage(page)
-    local note = page:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    note:SetPoint("TOPLEFT", page, "TOPLEFT", 2, 0)
-    note:SetPoint("RIGHT", page, "RIGHT", -2, 0)
-    note:SetJustifyH("LEFT")
-    note:SetText("|cffff8000Experimental:|r these features work, but how they behave may still change between " ..
+    local scroll = CreateFrame("ScrollFrame", "AHSimExperimentalScroll", page, "UIPanelScrollFrameTemplate")
+    scroll:SetPoint("TOPLEFT", page, "TOPLEFT", 0, 0)
+    scroll:SetPoint("BOTTOMRIGHT", page, "BOTTOMRIGHT", -26, 0)
+
+    local content = CreateFrame("Frame", "AHSimExperimentalContent", scroll)
+    content:SetSize(1, 1)
+    scroll:SetScrollChild(content)
+
+    local ROW_GAP = 6
+    local rows = {}  -- { frame = row, measure = function(width) -> height }
+
+    local function AddRow(measure, gapAbove)
+        local row = CreateFrame("Frame", nil, content)
+        local previous = rows[#rows]
+        if previous then
+            row:SetPoint("TOPLEFT", previous.frame, "BOTTOMLEFT", 0, -(gapAbove or ROW_GAP))
+        else
+            row:SetPoint("TOPLEFT", content, "TOPLEFT", 0, 0)
+        end
+        row:SetPoint("RIGHT", content, "RIGHT", 0, 0)
+        row:SetHeight(ROW_HEIGHT)
+        rows[#rows + 1] = { frame = row, measure = measure, gap = gapAbove or ROW_GAP }
+        return row
+    end
+
+    local function AddText(text, fontObject, gapAbove)
+        local fs
+        local row = AddRow(function(width)
+            fs:SetWidth(width)
+            return math.max(fs:GetStringHeight(), 12) + 2
+        end, gapAbove)
+        fs = WrapText(row:CreateFontString(nil, "ARTWORK", fontObject))
+        fs:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
+        fs:SetText(text)
+        return fs
+    end
+
+    -- A checkbox whose template label wraps beside it and stops at the page edge.
+    local function AddCheckbox(name, label, onClick)
+        local cb
+        local row = AddRow(function(width)
+            local text = _G[name .. "Text"]
+            text:SetWidth(math.max(width - 30, 40))
+            return math.max(26, text:GetStringHeight() + 14)
+        end)
+        cb = CreateFrame("CheckButton", name, row, "UICheckButtonTemplate")
+        cb:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
+        local text = WrapText(_G[name .. "Text"])
+        text:ClearAllPoints()
+        text:SetPoint("TOPLEFT", cb, "TOPRIGHT", 0, -8)
+        text:SetText(label)
+        cb:SetScript("OnClick", onClick)
+        return cb
+    end
+
+    -- A wrapped label on the left, an edit box beside it.
+    local SETTING_LABEL_WIDTH = 110
+    local function AddNumberSetting(label, onEnter, maxLetters, allowDecimal)
+        local fs
+        local row = AddRow(function()
+            fs:SetWidth(SETTING_LABEL_WIDTH)
+            return math.max(ROW_HEIGHT, fs:GetStringHeight() + 4)
+        end)
+        fs = WrapText(row:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall"))
+        fs:SetPoint("TOPLEFT", row, "TOPLEFT", 4, -4)
+        fs:SetText(label)
+        return CreateNumberBox(row, SETTING_LABEL_WIDTH + 10, 0, 60, onEnter, maxLetters, allowDecimal)
+    end
+
+    local COMMAND_WIDTH = 160
+    local function AddCommand(label, onClick)
+        local row = AddRow(function() return ROW_HEIGHT end)
+        CreateCommandButton(row, label, 0, 0, COMMAND_WIDTH, onClick)
+    end
+
+    AddText("|cffff8000Experimental:|r these features work, but how they behave may still change between " ..
         "releases. Market Mode replaces the Replay bot with named seller bots and buyers learned from a real " ..
-        "market (see Help, step 6). Replay Bidding turns the Replay bot's bidding on or off.")
+        "market (see Help, step 6). Replay Bidding turns the Replay bot's bidding on or off.",
+        "GameFontHighlightSmall", 0)
 
-    local top = 44
-    local settingsHeader = CreateSectionHeader(page, "Settings")
-    settingsHeader:SetPoint("TOPLEFT", page, "TOPLEFT", 2, -top)
-
-    local settings = CreateFrame("Frame", nil, page)
-    settings:SetPoint("TOPLEFT", page, "TOPLEFT", 0, -(top + HEADER_GAP))
-    settings:SetSize(420, 1)
-    local y = 0
+    AddText("Settings", "GameFontNormal", 14)
 
     -- AuctionSim.Mode: unticked = Replay, ticked = Market. Takes effect at restart.
-    marketModeCheckbox = CreateFrame("CheckButton", "AHSimMarketModeCheckbox", settings, "UICheckButtonTemplate")
-    marketModeCheckbox:SetPoint("TOPLEFT", 0, -y)
-    _G["AHSimMarketModeCheckboxText"]:SetText("Market Mode (restart to switch)")
-    marketModeCheckbox:SetScript("OnClick", function(self)
+    marketModeCheckbox = AddCheckbox("AHSimMarketModeCheckbox", "Market Mode (restart to switch)", function(self)
         local on = self:GetChecked()
         SetConfigAndSave("Mode", on and "Market" or "Replay",
             (on and "Market" or "Replay") .. " mode saved -- restart the worldserver to switch.")
+        UpdateReplayBiddingState()
         if on then
             StaticPopup_Show("AHSIM_RESTART_FOR_MARKET")  -- saved either way; Yes restarts now
         end
     end)
-    y = y + 26
 
     -- AuctionSim.Replay.Bidding: live from the next scan; unticking drops queued bids.
-    replayBiddingCheckbox = CreateFrame("CheckButton", "AHSimReplayBiddingCheckbox", settings,
-        "UICheckButtonTemplate")
-    replayBiddingCheckbox:SetPoint("TOPLEFT", 0, -y)
-    _G["AHSimReplayBiddingCheckboxText"]:SetText("Replay Bidding (the Replay bot bids and outbids)")
-    replayBiddingCheckbox:SetScript("OnClick", function(self)
-        local on = self:GetChecked()
-        SetConfigAndSave("ReplayBidding", on and "1" or "0",
-            on and "Replay bidding on." or "Replay bidding off -- queued bids dropped.")
+    -- Greyed out while Market Mode is ticked (UpdateReplayBiddingState).
+    replayBiddingCheckbox = AddCheckbox(
+        "AHSimReplayBiddingCheckbox", "Replay Bidding (the Replay bot bids and outbids)", function(self)
+            local on = self:GetChecked()
+            SetConfigAndSave("ReplayBidding", on and "1" or "0",
+                on and "Replay bidding on." or "Replay bidding off -- queued bids dropped.")
+        end)
+    replayBiddingCheckbox:SetScript("OnEnter", function(self)
+        if not self:IsEnabled() then
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText(REPLAY_BIDDING_NOTE, 1, 1, 1, 1, true)
+            GameTooltip:Show()
+        end
     end)
-    y = y + 34
+    replayBiddingCheckbox:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    replayBiddingNote = AddText(REPLAY_BIDDING_NOTE, "GameFontDisableSmall", 0)
+    UpdateReplayBiddingState()
 
     -- AuctionSim.Market.*: Bots apply at restart / Market Reload; Scale from the next step.
-    CreateLabel(settings, "Market Bots:", 4, -y)
-    marketBotsBox = CreateNumberBox(settings, 110, -y, 60, function(self)
+    marketBotsBox = AddNumberSetting("Market Bots:", function(self)
         SetConfigAndSave("MarketBots", self:GetText(), "Market Bots saved -- applies at restart or Market Reload.")
     end, 4)
-    CreateLabel(settings, "Market Scale:", 200, -y)
-    marketScaleBox = CreateNumberBox(settings, 300, -y, 60, function(self)
+    marketScaleBox = AddNumberSetting("Market Scale:", function(self)
         local value = FormatScaleValue(self:GetText())
         self:SetText(value)
         SetConfigAndSave("MarketScale", value, "Market Scale saved.")
     end, 6, true)
-    y = y + 30
-    settings:SetHeight(y)
 
-    local commandsHeader = CreateSectionHeader(page, "Market Commands")
-    commandsHeader:SetPoint("TOPLEFT", settings, "BOTTOMLEFT", 2, -10)
-
-    local commands = CreateFrame("Frame", nil, page)
-    commands:SetPoint("TOPLEFT", settings, "BOTTOMLEFT", 0, -(10 + HEADER_GAP))
-    commands:SetSize(LEFT_COLUMN_WIDTH, 1)
-    local cy = 0
-    local step = ROW_HEIGHT + 6
-    CreateCommandButton(
-        commands, "Market Status", 0, -cy, LEFT_COLUMN_WIDTH, function() AHSim:Send(OP.MARKETSTATUS) end)
-    cy = cy + step
-    CreateCommandButton(
-        commands, "Market Fill", 0, -cy, LEFT_COLUMN_WIDTH, function() AHSim:Send(OP.MARKETFILL) end)
-    cy = cy + step
-    CreateCommandButton(
-        commands, "Market Reload", 0, -cy, LEFT_COLUMN_WIDTH, function() AHSim:Send(OP.MARKETRELOAD) end)
-    cy = cy + step
+    AddText("Market Commands", "GameFontNormal", 14)
+    AddCommand("Market Status", function() AHSim:Send(OP.MARKETSTATUS) end)
+    AddCommand("Market Fill", function() AHSim:Send(OP.MARKETFILL) end)
+    AddCommand("Market Reload", function() AHSim:Send(OP.MARKETRELOAD) end)
     -- Dry run first: the server reports what it would delete and, if anything, asks
     -- (PURGEASK) for a second, confirming click.
-    CreateCommandButton(
-        commands, "Market Purge", 0, -cy, LEFT_COLUMN_WIDTH, function() AHSim:Send(OP.MARKETPURGE) end)
-    cy = cy + ROW_HEIGHT
-    commands:SetHeight(cy)
+    AddCommand("Market Purge", function() AHSim:Send(OP.MARKETPURGE) end)
+    AddCommand("Help", function() AHSim.ShowExperimentalHelp() end)
+
+    local function Relayout()
+        local width = scroll:GetWidth()
+        if not width or width <= 0 then
+            return
+        end
+        content:SetWidth(width)
+        local total = 0
+        for i, row in ipairs(rows) do
+            local height = row.measure(width)
+            row.frame:SetHeight(height)
+            total = total + height + (i > 1 and row.gap or 0)
+        end
+        content:SetHeight(math.max(total + 4, 1))
+    end
+    scroll:SetScript("OnSizeChanged", Relayout)
+    page:SetScript("OnShow", Relayout)
+    Relayout()
 end
 
 
@@ -695,6 +855,7 @@ AHSim:RegisterHandler(OP.CONFIG, function(key, value)
         if maxItemLevelBox then maxItemLevelBox:SetText(value) end
     elseif key == "Mode" then
         if marketModeCheckbox then marketModeCheckbox:SetChecked(value == "Market") end
+        UpdateReplayBiddingState()
     elseif key == "ReplayBidding" then
         if replayBiddingCheckbox then replayBiddingCheckbox:SetChecked(value == "1") end
     elseif key == "MarketBots" then
