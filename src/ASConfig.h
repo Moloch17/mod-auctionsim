@@ -8,6 +8,7 @@
 #include <unordered_set>
 #include <vector>
 #include "AuctionHouseMgr.h"
+#include "AuctionPricing.h"
 #include "ItemTemplate.h"
 #include "ScannedItem.h"
 
@@ -75,11 +76,13 @@ public:
     bool IsVendorSold(uint32 itemId) const { return vendorSoldItems.count(itemId) > 0; }
 
     // The most the bot pays per unit for the item, by buyout or by bid, in Replay and
-    // Market mode alike (AuctionPricing::IsWithinVendorBuyPrice): its vendor purchase
-    // price if a vendor stocks it, else 0 (no cap).
+    // Market mode alike (AuctionPricing::IsWithinVendorBuyPrice): the vendor's price for
+    // one if a vendor stocks it (BuyPrice buys BuyCount of them), else 0 (no cap).
     uint32 VendorBuyCap(ItemTemplate const* proto) const
     {
-        return (IsVendorSold(proto->ItemId) && proto->BuyPrice > 0) ? static_cast<uint32>(proto->BuyPrice) : 0;
+        return (IsVendorSold(proto->ItemId) && proto->BuyPrice > 0)
+            ? AuctionPricing::VendorUnitBuyPrice(static_cast<uint32>(proto->BuyPrice), proto->BuyCount)
+            : 0;
     }
 
     // ScannedItem storage. A std::deque, not a vector: the ScannedItem* kept in

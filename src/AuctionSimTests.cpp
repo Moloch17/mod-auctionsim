@@ -553,6 +553,34 @@ namespace
         return Pass("IsWithinVendorBuyPrice boundary");
     }
 
+    TestResult TestVendorUnitBuyPrice()
+    {
+        struct Case
+        {
+            uint32 buyPrice, buyCount, want;
+        };
+        Case const cases[] = {
+            {500, 1, 500},
+            {50000, 5, 10000},  // Enchanted Vial: 5 for 5g
+            {16000, 5, 3200},
+            {100, 3, 33},       // rounded down: never above what the vendor charges
+            {10, 200, 1},       // 200 arrows for 10 copper: at least 1, 0 would lift the cap
+            {500, 0, 500},      // no BuyCount in the template: one per purchase
+            {0, 5, 0},          // no vendor price: no cap
+        };
+        for (Case const& c : cases)
+        {
+            uint32 got = AuctionPricing::VendorUnitBuyPrice(c.buyPrice, c.buyCount);
+            if (got != c.want)
+            {
+                return Fail(
+                    "VendorUnitBuyPrice",
+                    Acore::StringFormat("{} for {}: got {}, want {}", c.buyPrice, c.buyCount, got, c.want));
+            }
+        }
+        return Pass("VendorUnitBuyPrice");
+    }
+
     // The vendor cap counts only unlimited, gold-only npc_vendor rows (issue #6): an
     // item whose every row has a stock limit (maxcount) or a token cost (ExtendedCost)
     // must not be capped, and an item with an unlimited gold row must be.
@@ -2413,6 +2441,7 @@ namespace AuctionSimTests
             TestWeightedPick(),
             TestIsWithinLevelCapBoundary(),
             TestIsWithinVendorBuyPriceBoundary(),
+            TestVendorUnitBuyPrice(),
             TestVendorCapRows(config),
             TestIsBuyableQuality(),
             TestBuyQueuePopulatesOnQualifyingPrice(bot),
