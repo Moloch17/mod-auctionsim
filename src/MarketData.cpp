@@ -82,6 +82,7 @@ namespace Market
         struct Builder
         {
             std::array<std::vector<Curve>, kFactions> curves;
+            std::array<std::vector<Curve>, kFactions> curveShares;
             std::array<std::vector<std::array<float, kWeekdays>>, kFactions> weekdays;
             std::vector<RawItem> items;
             std::vector<RawKeyed> curveKeys;
@@ -172,6 +173,28 @@ namespace Market
             cumulative[b] = static_cast<float>(running);
         }
         return cumulative;
+    }
+
+    double CurveShare(Curve const& w, double ratio)
+    {
+        double share = 0.0;
+        if (ratio <= kRatioEdges.front())
+        {
+            share = w[0];
+        }
+        else if (ratio < kRatioEdges.back())
+        {
+            size_t b = 0;
+            while (b + 1 < kRatioEdges.size() && kRatioEdges[b + 1] <= ratio)
+            {
+                ++b;
+            }
+            double const lo = w[b];
+            double const hi = b + 1 < kCurveBins ? w[b + 1] : 0.0;
+            double const t = (ratio - kRatioEdges[b]) / (kRatioEdges[b + 1] - kRatioEdges[b]);
+            share = lo + t * (hi - lo);
+        }
+        return std::clamp(share, 0.0, 1.0);
     }
 
     double ReservationRatio(Curve const& cumulative, double uBin, double uIn)
@@ -380,6 +403,7 @@ namespace Market
                         builder.curveKeys.push_back(
                             {slot, itemClass, static_cast<uint32>(builder.curves[slot].size())});
                         builder.curves[slot].push_back(CumulativeCurve(w));
+                        builder.curveShares[slot].push_back(w);
                     }
                 }
                 else if (section == "WEEKDAY")
@@ -500,6 +524,7 @@ namespace Market
         {
             Faction& fac = factions[slot];
             fac.curves = std::move(builder.curves[slot]);
+            fac.curveShares = std::move(builder.curveShares[slot]);
             fac.weekdays = std::move(builder.weekdays[slot]);
 
             std::unordered_map<int32, int32> curveByClass;
@@ -640,6 +665,7 @@ namespace Market
                 item.vendor = std::max(item.vendor, f.sellPrice);
                 item.maxc = std::max<uint32>(1, std::min(item.maxc, std::max<uint32>(1, f.maxStack)));
                 item.vendorBuyGuard = f.vendorBuyGuard;
+                item.quality = f.quality;
                 postable[i] = item.listed && f.postable;
             }
 
@@ -675,7 +701,8 @@ namespace Market
         {
             bytes += fac.items.capacity() * sizeof(Item) + fac.itemIndex.size() * kNode;
             bytes += fac.craft.capacity() * sizeof(Reagent);
-            bytes += fac.curves.capacity() * sizeof(Curve) + fac.weekdays.capacity() * sizeof(fac.weekdays[0]);
+            bytes += (fac.curves.capacity() + fac.curveShares.capacity()) * sizeof(Curve) +
+                     fac.weekdays.capacity() * sizeof(fac.weekdays[0]);
             bytes += fac.policies.capacity() * sizeof(PolicyRow) + fac.policyIndex.size() * kNode;
             bytes += fac.stacks.capacity() * sizeof(Quantiles) + fac.stackIndex.size() * kNode;
             bytes += fac.bots.capacity() * (sizeof(BotName) + 16);

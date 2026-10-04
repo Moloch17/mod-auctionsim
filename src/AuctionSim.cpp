@@ -232,6 +232,19 @@ bool AuctionSim::LoadMarketData()
     return true;
 }
 
+void AuctionSim::ApplyPlayerBuyer()
+{
+    if (!market || !config)
+    {
+        return;
+    }
+    Market::PlayerBuyerParams params;
+    params.sellHours = config->marketPlayerSellHours;
+    params.liquidity = config->marketPlayerLiquidity;
+    params.qualityBonus = config->marketPlayerQualityBonus;
+    market->SetPlayerBuyer(params, config->marketPlayerGoldPerDay);
+}
+
 bool AuctionSim::IsModuleCharacter(uint32 lowGuid) const
 {
     if (lowGuid == 0)
@@ -286,6 +299,10 @@ bool AuctionSim::ReloadMarket(std::string& note)
     _marketPurged = false;
     config->marketBots = fresh->marketBots;
     config->marketScale = fresh->marketScale;
+    config->marketPlayerSellHours = fresh->marketPlayerSellHours;
+    config->marketPlayerLiquidity = fresh->marketPlayerLiquidity;
+    config->marketPlayerQualityBonus = fresh->marketPlayerQualityBonus;
+    config->marketPlayerGoldPerDay = fresh->marketPlayerGoldPerDay;
     config->replayBidding = fresh->replayBidding;
     if (!LoadMarketData())
     {
@@ -367,6 +384,7 @@ bool AuctionSim::StartOrReloadBot(bool reloadConfig)
         market = std::make_unique<MarketService>(
             *marketData, marketRoster, *buyingService, bot->GetPlayer()->GetGUID());
         market->SetScale(config->marketScale);
+        ApplyPlayerBuyer();
         if (market->SetupBots(config->marketBots) == Market::BotRoster::Result::Failed)
         {
             LOG_ERROR("module", "AuctionSim: market sellers couldn't be set up: {}", market->SetupNote());
@@ -894,6 +912,13 @@ std::vector<std::string> AuctionSim::DescribeMarketStatus() const
             stats.buyers,
             stats.buysQueued,
             stats.micros));
+        MarketService::PlayerBuyerTotals player = service->GetPlayerBuyerTotals(faction);
+        lines.push_back(Acore::StringFormat(
+            "  player buyer, last 24 h: {} purchase(s), {}g {}s {}c paid to players",
+            player.purchases,
+            player.copper / 10000,
+            (player.copper / 100) % 100,
+            player.copper % 100));
         MarketService::FillStatus fill = service->GetFillStatus(faction);
         if (fill.running)
         {

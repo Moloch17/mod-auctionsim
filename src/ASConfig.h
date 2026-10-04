@@ -60,6 +60,11 @@ public:
     uint32 marketBots = 100;
     // AuctionSim.Market.Scale: market size as a fraction of Lordaeron's.
     float marketScale = 0.1f;
+    // AuctionSim.Market.Player*: the player buyer (MARKET_FORMAT.md "Player buyer").
+    float marketPlayerSellHours = 24.0f;  // 0 = off
+    float marketPlayerLiquidity = 0.5f;
+    bool marketPlayerQualityBonus = false;
+    uint32 marketPlayerGoldPerDay = 0;  // gold per character per 24 h, 0 = no limit
 
     // "Replay" / "Market", any case. False on anything else.
     static bool ParseMode(std::string_view text, bool& outMarket);

@@ -64,6 +64,7 @@ bool MarketService::LoadFile(
         facts.sellPrice = proto->SellPrice;
         facts.maxStack = std::max<uint32>(1, proto->GetMaxStackSize());
         facts.vendorBuyGuard = (config.IsVendorSold(itemId) && proto->BuyPrice > 0) ? proto->BuyPrice : 0;
+        facts.quality = static_cast<uint8>(proto->Quality);
         return facts;
     });
 
@@ -112,6 +113,27 @@ MarketService::MarketService(
             _memories[faction].Reserve(_data.factions[faction].basket.size());
         }
     }
+}
+
+void MarketService::SetPlayerBuyer(Market::PlayerBuyerParams const& params, uint32 goldPerDay)
+{
+    _playerBuyer = params;
+    _playerGoldLimitCopper = static_cast<uint64>(goldPerDay) * 10000;  // gold -> copper
+}
+
+MarketService::PlayerBuyerTotals MarketService::GetPlayerBuyerTotals(size_t faction) const
+{
+    PlayerBuyerTotals totals;
+    uint64 const now = static_cast<uint64>(GameTime::GetGameTime().count());
+    for (Payment const& payment : _playerPayments[faction])
+    {
+        if (payment.time + Market::GoldLedger::kWindowSeconds > now)
+        {
+            totals.purchases++;
+            totals.copper += payment.copper;
+        }
+    }
+    return totals;
 }
 
 void MarketService::SetScale(float scale)
@@ -417,9 +439,12 @@ void MarketService::StepHouse(size_t faction)
         }
     }
 
+    // The 24 h low of each item's seller price, after the posts and before any buying.
+    time_t const now = GameTime::GetGameTime().count();
+    _sellerLows[faction].Fold(engine, fac.items.size(), static_cast<uint64>(now));
+
     // 2. Buyers, queued so their purchases spread over the next 20 minutes.
     _claims.clear();
-    time_t const now = GameTime::GetGameTime().count();
     stats.buyers = engine.PlanBuys(fac, static_cast<double>(_scale) * kStepHours, Weekday(now), _rng, _claims);
     for (uint32 index : _claims)
     {
@@ -431,13 +456,52 @@ void MarketService::StepHouse(size_t faction)
         }
     }
 
+    // 3. The player buyer: players' listings left after the regular buyers.
+    _playerClaims.clear();
+    engine.PlanPlayerBuys(fac, _playerBuyer, _sellerLows[faction], kStepHours, _claims, _rng, _playerClaims);
+    if (!_playerClaims.empty())
+    {
+        AuctionHouseObject* house = sAuctionMgr->GetAuctionsMapByHouseId(houseId);
+        uint64 const nowSeconds = static_cast<uint64>(now);
+        for (uint32 index : _playerClaims)
+        {
+            Market::Listing const& listing = listings[index];
+            AuctionEntry const* auction = house->GetAuction(listing.auctionId);
+            if (!auction || auction->buyout == 0)
+            {
+                continue;
+            }
+            // Counted when queued: a buy the owner cancels first still counts for 24 h.
+            if (!_playerLedger.TryCharge(listing.owner, auction->buyout, nowSeconds, _playerGoldLimitCopper))
+            {
+                stats.playerCapped++;
+                continue;
+            }
+            if (_buying.EnqueueBuyout(
+                    listing.auctionId, houseId, AuctionPricing::RollBuyTime(static_cast<time_t>(listing.expire), now)))
+            {
+                stats.playerBuys++;
+                _playerPayments[faction].push_back({nowSeconds, auction->buyout});
+            }
+        }
+    }
+    std::deque<Payment>& payments = _playerPayments[faction];
+    while (!payments.empty() && payments.front().time + Market::GoldLedger::kWindowSeconds <= uint64(now))
+    {
+        payments.pop_front();
+    }
+    if (faction == 0)
+    {
+        _playerLedger.Prune(static_cast<uint64>(now));  // once per step is plenty
+    }
+
     stats.micros =
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
     _stats[faction] = stats;
     LOG_DEBUG(
         "module",
         "AuctionSim: market step house {}: {} listings seen, {} post events, {} listings created, {} carried, "
-        "{} buyers, {} buys queued, {} us",
+        "{} buyers, {} buys queued, {} player-buyer buys ({} over the gold limit), {} us",
         Market::FactionHouse(faction),
         stats.listingsSeen,
         stats.postEvents,
@@ -445,6 +509,8 @@ void MarketService::StepHouse(size_t faction)
         stats.listingsCarried,
         stats.buyers,
         stats.buysQueued,
+        stats.playerBuys,
+        stats.playerCapped,
         stats.micros);
 }
 
@@ -533,7 +599,7 @@ uint32 MarketService::CreateListings(
             listing.owner = owner.GetCounter();
             listing.auctionId = auction->Id;
             listing.expire = static_cast<uint32>(auction->expire_time);
-            listing.flags = Market::Listing::kBuyable;
+            listing.flags = Market::Listing::kBuyable | Market::Listing::kBotOwned;
             _engines[faction].Listings().push_back(listing);
         }
     }

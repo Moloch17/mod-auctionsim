@@ -1,6 +1,8 @@
 #include "MarketEngine.h"
 #include <algorithm>
 #include <cmath>
+#include <iterator>
+#include <limits>
 
 namespace Market
 {
@@ -49,6 +51,14 @@ namespace Market
                 state.sellers = static_cast<uint32>(std::unique(_owners.begin(), _owners.end()) - _owners.begin());
                 state.begin = static_cast<uint32>(i);
                 state.end = static_cast<uint32>(j);
+                for (size_t k = i; k < j; ++k)  // cheapest first: the first seller listing
+                {
+                    if ((_listings[k].flags & Listing::kBotOwned) && _listings[k].perUnit != Listing::kNoBuyout)
+                    {
+                        state.cheapestSeller = _listings[k].perUnit;
+                        break;
+                    }
+                }
             }
             i = j;
         }
@@ -464,5 +474,224 @@ namespace Market
             budget -= take;
         }
         out.swap(chosen);
+    }
+
+    double PlayerQualityFactor(uint8 quality)
+    {
+        switch (quality)
+        {
+            case 0:
+                return 0.0;
+            case 1:
+                return 1.0;
+            case 2:
+                return 1.5;
+            case 3:
+                return 2.5;
+            default:
+                return 4.0;  // epic, and legendary and up
+        }
+    }
+
+    double PlayerLiquidityFactor(double buyersH, uint8 quality, PlayerBuyerParams const& params)
+    {
+        if (quality == 0)
+        {
+            return 0.0;
+        }
+        double b = std::max(0.0, buyersH);
+        if (params.qualityBonus)
+        {
+            b *= PlayerQualityFactor(quality);
+        }
+        return std::min(1.0, std::pow(b / kLiquidBuyersH, params.liquidity));
+    }
+
+    double PlayerPriceFactor(Curve const& shares, double unitPrice, double marketPrice)
+    {
+        if (unitPrice <= marketPrice)
+        {
+            return 1.0;
+        }
+        double const atRef = CurveShare(shares, 1.0);
+        if (!(atRef > 0.0) || !(marketPrice > 0.0))
+        {
+            return 0.0;
+        }
+        return std::clamp(CurveShare(shares, unitPrice / marketPrice) / atRef, 0.0, 1.0);
+    }
+
+    double PlayerMarketPrice(double ref, uint32 cheapestSeller)
+    {
+        return cheapestSeller != Listing::kNoBuyout ? std::min(ref, static_cast<double>(cheapestSeller)) : ref;
+    }
+
+    double PlayerBuyChance(double sellHours, double liquidity, double priceFactor, double dtHours)
+    {
+        if (!(sellHours > 0.0))
+        {
+            return 0.0;
+        }
+        double const h0 = -std::log(0.05) / sellHours;
+        return 1.0 - std::exp(-h0 * liquidity * priceFactor * dtHours);
+    }
+
+    bool GoldLedger::TryCharge(uint32 owner, uint64 copper, uint64 now, uint64 limitCopper)
+    {
+        if (limitCopper > 0 && PaidWithin(owner, now) + copper > limitCopper)
+        {
+            return false;
+        }
+        _payments[owner].push_back({now, copper});
+        return true;
+    }
+
+    uint64 GoldLedger::PaidWithin(uint32 owner, uint64 now)
+    {
+        auto it = _payments.find(owner);
+        if (it == _payments.end())
+        {
+            return 0;
+        }
+        std::deque<Payment>& payments = it->second;
+        while (!payments.empty() && payments.front().time + kWindowSeconds <= now)
+        {
+            payments.pop_front();
+        }
+        if (payments.empty())
+        {
+            _payments.erase(it);
+            return 0;
+        }
+        uint64 total = 0;
+        for (Payment const& payment : payments)
+        {
+            total += payment.copper;
+        }
+        return total;
+    }
+
+    void GoldLedger::Prune(uint64 now)
+    {
+        for (auto it = _payments.begin(); it != _payments.end();)
+        {
+            std::deque<Payment>& payments = it->second;
+            while (!payments.empty() && payments.front().time + kWindowSeconds <= now)
+            {
+                payments.pop_front();
+            }
+            it = payments.empty() ? _payments.erase(it) : std::next(it);
+        }
+    }
+
+    void SellerLow::Fold(Engine const& engine, size_t itemCount, uint64 now)
+    {
+        float const none = std::numeric_limits<float>::infinity();
+        uint64 const bucket = now / kBucketSeconds;
+        if (!_started || _current.size() != itemCount)
+        {
+            _current.assign(itemCount, none);
+            _previous.assign(itemCount, none);
+            _bucket = bucket;
+            _started = true;
+        }
+        else if (bucket != _bucket)
+        {
+            // The older bucket is dropped; after a gap of more than one bucket both are stale.
+            if (bucket == _bucket + 1)
+            {
+                _previous.swap(_current);
+            }
+            else
+            {
+                std::fill(_previous.begin(), _previous.end(), none);
+            }
+            std::fill(_current.begin(), _current.end(), none);
+            _bucket = bucket;
+        }
+        size_t const n = std::min(itemCount, engine.ItemCount());
+        for (size_t i = 0; i < n; ++i)
+        {
+            uint32 const cheapest = engine.State(static_cast<uint32>(i)).cheapestSeller;
+            if (cheapest != Listing::kNoBuyout)
+            {
+                _current[i] = std::min(_current[i], static_cast<float>(cheapest));
+            }
+        }
+    }
+
+    uint32 SellerLow::Low(uint32 itemIdx) const
+    {
+        if (itemIdx >= _current.size())
+        {
+            return Listing::kNoBuyout;
+        }
+        float const low = std::min(_current[itemIdx], _previous[itemIdx]);
+        return std::isfinite(low) ? static_cast<uint32>(low) : Listing::kNoBuyout;
+    }
+
+    void Engine::PlanPlayerBuys(
+        Faction const& fac,
+        PlayerBuyerParams const& params,
+        SellerLow const& sellerLow,
+        double dtHours,
+        std::vector<uint32> const& taken,
+        Rng& rng,
+        std::vector<uint32>& out)
+    {
+        if (!(params.sellHours > 0.0))
+        {
+            return;
+        }
+        _taken.assign(_listings.size(), 0);
+        for (uint32 index : taken)
+        {
+            if (index < _taken.size())
+            {
+                _taken[index] = 1;
+            }
+        }
+        size_t const stateCount = std::min(fac.items.size(), _state.size());
+        for (size_t i = 0; i < stateCount; ++i)
+        {
+            ItemState const& state = _state[i];
+            if (state.begin == state.end)
+            {
+                continue;
+            }
+            Item const& item = fac.items[i];
+            if (!item.listed || !(item.ref > 0.0f) || item.quality == 0)
+            {
+                continue;
+            }
+            double const liquidity = PlayerLiquidityFactor(item.buyersH, item.quality, params);
+            if (!(liquidity > 0.0))
+            {
+                continue;
+            }
+            double const market = PlayerMarketPrice(item.ref, sellerLow.Low(static_cast<uint32>(i)));
+            for (uint32 k = state.begin; k < state.end; ++k)
+            {
+                Listing const& listing = _listings[k];
+                if (_taken[k] || !(listing.flags & Listing::kBuyable) || (listing.flags & Listing::kBotOwned))
+                {
+                    continue;  // not a player's, not buyable (no buyout, queued, vendor guard), or taken
+                }
+                double const price = static_cast<double>(listing.perUnit);
+                double factor = 1.0;
+                if (price > market)
+                {
+                    if (item.curve < 0)
+                    {
+                        continue;  // no CURVE: nobody pays above the market price
+                    }
+                    factor = PlayerPriceFactor(fac.curveShares[item.curve], price, market);
+                }
+                if (rng.Uniform() < PlayerBuyChance(params.sellHours, liquidity, factor, dtHours))
+                {
+                    out.push_back(k);
+                }
+            }
+        }
     }
 }

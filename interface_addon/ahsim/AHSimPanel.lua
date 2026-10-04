@@ -97,6 +97,7 @@ local MAX_RESULT_LINES = 200
 local maskEditBoxes = {}
 local enabledCheckbox, startupScanCheckbox, marketModeCheckbox, replayBiddingCheckbox
 local maxRequiredLevelBox, maxItemLevelBox, marketBotsBox, marketScaleBox
+local playerSellHoursBox, playerLiquidityBox, playerQualityBonusCheckbox, playerGoldPerDayBox
 local resultsLog                 -- ScrollingMessageFrame, created in BuildWindow
 local pendingResultLines = {}    -- lines logged before the window exists
 local setBotCharFrame, setBotCharInput
@@ -932,6 +933,27 @@ function AHSim.BuildExperimentalPage(page)
         SetConfigAndSave("MarketScale", value, "Market Scale saved.")
     end, 6, true)
 
+    -- The player buyer (AuctionSim.Market.Player*): live from the next market step.
+    AddText("Player buyer: buys players' listings at the market price (creates gold).",
+        "GameFontHighlightSmall", 10)
+    playerSellHoursBox = AddNumberSetting("Player Sell Hours:", function(self)
+        local value = FormatScaleValue(self:GetText())
+        self:SetText(value)
+        SetConfigAndSave("PlayerSellHours", value, "Player Sell Hours saved.")
+    end, 6, true)
+    playerLiquidityBox = AddNumberSetting("Player Liquidity:", function(self)
+        local value = FormatScaleValue(self:GetText())
+        self:SetText(value)
+        SetConfigAndSave("PlayerLiquidity", value, "Player Liquidity saved.")
+    end, 6, true)
+    playerQualityBonusCheckbox = AddCheckbox("AHSimPlayerQualityBonusCheckbox",
+        "Quality Bonus (better items count as more in demand)", function(self)
+            SetConfigAndSave("PlayerQualityBonus", self:GetChecked() and "1" or "0", "Quality Bonus saved.")
+        end)
+    playerGoldPerDayBox = AddNumberSetting("Player Gold / Day (0 = no limit):", function(self)
+        SetConfigAndSave("PlayerGoldPerDay", self:GetText(), "Player Gold / Day saved.")
+    end, 7)
+
     AddText("Market Commands", "GameFontNormal", 14)
     AddCommand("Market Status", function() AHSim:Send(OP.MARKETSTATUS) end)
     AddCommand("Market Fill", function() AHSim:Send(OP.MARKETFILL) end)
@@ -976,6 +998,14 @@ AHSim:RegisterHandler(OP.CONFIG, function(key, value)
     elseif key == "ReplayBidding" then
         replayBiddingSaved = value == "1"
         UpdateReplayBiddingState()
+    elseif key == "PlayerSellHours" then
+        if playerSellHoursBox then playerSellHoursBox:SetText(FormatScaleValue(value)) end
+    elseif key == "PlayerLiquidity" then
+        if playerLiquidityBox then playerLiquidityBox:SetText(FormatScaleValue(value)) end
+    elseif key == "PlayerQualityBonus" then
+        if playerQualityBonusCheckbox then playerQualityBonusCheckbox:SetChecked(value == "1") end
+    elseif key == "PlayerGoldPerDay" then
+        if playerGoldPerDayBox then playerGoldPerDayBox:SetText(value) end
     elseif key == "MarketBots" then
         if marketBotsBox then marketBotsBox:SetText(value) end
     elseif key == "MarketScale" then

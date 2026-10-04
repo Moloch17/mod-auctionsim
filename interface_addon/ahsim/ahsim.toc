@@ -2,7 +2,7 @@
 ## Title: AHSim Bot Manager
 ## Notes: Companion addon for the AuctionSim server module. Adds a standalone "Bot Manager" window (open with /auctionsim) for GMs to edit AuctionSim's config and run its commands in-game.
 ## Author: Moloch17
-## Version: 1.7.3
+## Version: 1.8.0
 ## SavedVariables: AHSimDB
 
 AHSim.lua

@@ -134,6 +134,35 @@ scans and buys what is cheap. Market mode replaces that with a market learned fr
 - **Gold.** The buyer bot is never charged, so gold enters the economy only when it buys a player's listing.
   Everything paid to a seller bot is discarded, so gold players spend on seller listings leaves the economy.
 
+### Player buyer
+
+On a small realm an item's ordinary buyers come rarely, so a player's fairly priced listing could wait weeks. In
+Market mode the player buyer gives every **player's** listing its own chance to sell each 30 minutes; it never buys
+the market sellers' listings or the buyer bot's.
+
+- **Market price.** The lower of the item's reference price and the lowest price a market seller listed it at in the
+  last 24 hours. A listing at or under it sells at the full rate; a pricier one more slowly (it follows the item's
+  buyer curve), and one at three times the market price or more almost never.
+- **Speed.** At full liquidity, 95% of listings at the market price sell within **Player Sell Hours**. Rarely bought
+  items are slower, by how much **Player Liquidity** says; **Quality Bonus** counts better items as more in demand.
+- **Never bought:** grey items, and anything above the vendor price of an item vendors sell.
+- **It creates gold.** It pays the full buyout through the buyer bot, which is never charged, so the selling player's
+  gold is new gold. **Player Gold / Day** limits how much any one character can earn from it.
+- The purchases go through the buy queue like other market buys. `.auctionsim market status` shows, per auction
+  house, how many it made and the gold it paid in the last 24 hours.
+
+Typical share of listings at the market price sold within 24 hours, with Quality Bonus on at Player Liquidity 0.5:
+
+| Items | Sold within 24 h |
+|---|---|
+| Materials | 95% |
+| White trade goods, glyphs | 75% |
+| Epic weapons | 69% |
+| Green gems | 63% |
+| Blue armor | 58% |
+| Green armor | 43% |
+| Grey items | never |
+
 ### Settings
 
 #### Market Mode (checkbox)
@@ -168,6 +197,27 @@ with **Market Reload**.
 How big the market is, as a fraction of Lordaeron's: the default 0.1 is about 6,000 auctions per faction, and 1 is
 about 60,000. It scales both posting and buying. Your realm's population doesn't matter. Applies from the next market
 step.
+
+#### Player Sell Hours (box)
+
+How many hours it takes the player buyer to buy 95% of players' listings at the market price, for items in full
+demand (default 24). 0 turns the player buyer off. Applies from the next market step.
+
+#### Player Liquidity (box)
+
+How much an item's real demand slows the player buyer down (default 0.5). Each item is scaled by its Lordaeron buyers
+per hour relative to 0.5 per hour, raised to this power and capped at 1: at 0 every item sells at the full rate, at 1
+rarely bought items sell much more slowly. Applies from the next market step.
+
+#### Quality Bonus (checkbox)
+
+Counts better items as more in demand for Player Liquidity: white x1, green x1.5, blue x2.5, epic and up x4. Off by
+default. Applies from the next market step.
+
+#### Player Gold / Day (box)
+
+The most gold the player buyer pays any one character over a rolling 24 hours; a purchase that would go over it is
+skipped (it may sell later). 0, the default, means no limit. Applies from the next market step.
 
 ### Commands
 

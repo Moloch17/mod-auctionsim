@@ -153,6 +153,14 @@ namespace
         SendMessage(target, Acore::StringFormat("{}\tMode\t{}", Msg::Config, ASConfig::ModeName(modeShown)));
         SendMessage(target, Acore::StringFormat("{}\tMarketBots\t{}", Msg::Config, config->marketBots));
         SendMessage(target, Acore::StringFormat("{}\tMarketScale\t{:g}", Msg::Config, config->marketScale));
+        SendMessage(target,
+            Acore::StringFormat("{}\tPlayerSellHours\t{:g}", Msg::Config, config->marketPlayerSellHours));
+        SendMessage(target,
+            Acore::StringFormat("{}\tPlayerLiquidity\t{:g}", Msg::Config, config->marketPlayerLiquidity));
+        SendMessage(target, Acore::StringFormat(
+            "{}\tPlayerQualityBonus\t{}", Msg::Config, config->marketPlayerQualityBonus ? 1 : 0));
+        SendMessage(target,
+            Acore::StringFormat("{}\tPlayerGoldPerDay\t{}", Msg::Config, config->marketPlayerGoldPerDay));
         SendMessage(target, Acore::StringFormat("{}\tReplayBidding\t{}", Msg::Config, config->replayBidding ? 1 : 0));
 
         for (ASConfig::MaskKeyEntry const& entry : ASConfig::AllMaskKeys())
@@ -287,6 +295,40 @@ namespace
             return;
         }
 
+        if (key == "PlayerSellHours" || key == "PlayerLiquidity")
+        {
+            float value = 0.0f;
+            if (!ASParse::Float(valueStr, value) || value < 0.0f)
+            {
+                SendError(target, Acore::StringFormat("'{}' is not a valid number (0 or more)", valueStr));
+                return;
+            }
+            (key == "PlayerSellHours" ? config->marketPlayerSellHours : config->marketPlayerLiquidity) = value;
+            AuctionSim::instance()->ApplyPlayerBuyer();  // live from the next step
+            stagedKeys.insert(key);
+            return;
+        }
+        if (key == "PlayerQualityBonus")
+        {
+            config->marketPlayerQualityBonus = (valueStr == "1");
+            AuctionSim::instance()->ApplyPlayerBuyer();
+            stagedKeys.insert(key);
+            return;
+        }
+        if (key == "PlayerGoldPerDay")
+        {
+            uint32 gold = 0;
+            if (!ASParse::Integer(valueStr, gold))
+            {
+                SendError(target, Acore::StringFormat("'{}' is not a valid number of gold", valueStr));
+                return;
+            }
+            config->marketPlayerGoldPerDay = gold;
+            AuctionSim::instance()->ApplyPlayerBuyer();
+            stagedKeys.insert(key);
+            return;
+        }
+
         uint32 itemClass = 0;
         uint32 quality = 0;
         if (ASConfig::ResolveMaskKey(key, itemClass, quality))
@@ -349,6 +391,25 @@ namespace
             else if (key == "MarketBots")
             {
                 edits.push_back({"Market.Bots", "", Acore::StringFormat("{}", config->marketBots)});
+            }
+            else if (key == "PlayerSellHours")
+            {
+                edits.push_back(
+                    {"Market.PlayerSellHours", "", Acore::StringFormat("{:g}", config->marketPlayerSellHours)});
+            }
+            else if (key == "PlayerLiquidity")
+            {
+                edits.push_back(
+                    {"Market.PlayerLiquidity", "", Acore::StringFormat("{:g}", config->marketPlayerLiquidity)});
+            }
+            else if (key == "PlayerQualityBonus")
+            {
+                edits.push_back({"Market.PlayerQualityBonus", "", config->marketPlayerQualityBonus ? "1" : "0"});
+            }
+            else if (key == "PlayerGoldPerDay")
+            {
+                edits.push_back(
+                    {"Market.PlayerGoldPerDay", "", Acore::StringFormat("{}", config->marketPlayerGoldPerDay)});
             }
             else if (key == "MarketScale")
             {

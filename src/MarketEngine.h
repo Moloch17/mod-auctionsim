@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <unordered_map>
 #include <vector>
 #include "Define.h"
@@ -32,6 +33,7 @@ namespace Market
         uint32 cheapest = Listing::kNoBuyout;  // per unit, among buyout listings
         uint32 units = 0;
         uint32 sellers = 0;  // distinct owners
+        uint32 cheapestSeller = Listing::kNoBuyout;  // per unit, among market sellers' buyout listings
         uint32 begin = 0;    // [begin, end) in the sorted listings, cheapest first
         uint32 end = 0;
     };
@@ -89,6 +91,78 @@ namespace Market
         std::unordered_map<uint64, Entry> _entries;
     };
 
+    class Engine;
+
+    // MARKET_FORMAT.md's player buyer: every player listing gets its own chance to sell
+    // each step, set by the realm's settings rather than Market.Scale.
+    struct PlayerBuyerParams
+    {
+        double sellHours = 24.0;  // 0 = off
+        double liquidity = 0.5;   // exponent on buyersH / kLiquidBuyersH
+        bool qualityBonus = false;
+    };
+    constexpr double kLiquidBuyersH = 0.5;
+
+    // Demand multiplier by item quality with the quality bonus on; 0 for grey.
+    double PlayerQualityFactor(uint8 quality);
+    // L = min(1, (b / kLiquidBuyersH)^liquidity), b = buyersH x the quality factor when
+    // the bonus is on. 0 for a grey item (never bought).
+    double PlayerLiquidityFactor(double buyersH, uint8 quality, PlayerBuyerParams const& params);
+    // F = 1 at or below the market price m; above it w(price / m) / w(1) on the item's
+    // CURVE shares, clamped to [0, 1] (0 when w(1) is 0).
+    double PlayerPriceFactor(Curve const& shares, double unitPrice, double marketPrice);
+    // The market price m = min(ref, cheapest market-seller listing per unit up).
+    double PlayerMarketPrice(double ref, uint32 cheapestSeller);
+    // The chance a listing is bought this step: 1 - exp(-h0 x L x F x dt), h0 = -ln(0.05) / sellHours.
+    double PlayerBuyChance(double sellHours, double liquidity, double priceFactor, double dtHours);
+
+    // The lowest market-seller price per unit seen for each item over the last 24 h, as
+    // two 12 h buckets (current and previous): the player buyer's market price uses it,
+    // so buying out the cheapest seller copy doesn't raise the price a flipper is paid.
+    // Two floats per item per house.
+    class SellerLow
+    {
+    public:
+        static constexpr uint64 kBucketSeconds = 12 * 3600;
+
+        // Folds each item's cheapest seller listing (Engine::State().cheapestSeller) at
+        // `now` into the current bucket, starting a new bucket first when one is due.
+        void Fold(Engine const& engine, size_t itemCount, uint64 now);
+        // Lowest seen over the two buckets, or Listing::kNoBuyout if none.
+        uint32 Low(uint32 itemIdx) const;
+
+    private:
+        std::vector<float> _current;
+        std::vector<float> _previous;
+        uint64 _bucket = 0;
+        bool _started = false;
+    };
+
+    // What the player buyer paid each character over a rolling window (24 h), for
+    // AuctionSim.Market.PlayerGoldPerDay. A deque of payments per owner, pruned as it
+    // is touched; owners with nothing in the window are dropped.
+    class GoldLedger
+    {
+    public:
+        static constexpr uint64 kWindowSeconds = 24 * 3600;
+
+        // Records the payment and returns true when it keeps the owner's window total
+        // within limitCopper (0 = no limit); otherwise records nothing and returns false.
+        bool TryCharge(uint32 owner, uint64 copper, uint64 now, uint64 limitCopper);
+        uint64 PaidWithin(uint32 owner, uint64 now);
+        size_t Owners() const { return _payments.size(); }
+        // Drops every owner whose payments have all left the window.
+        void Prune(uint64 now);
+
+    private:
+        struct Payment
+        {
+            uint64 time;
+            uint64 copper;
+        };
+        std::unordered_map<uint32, std::deque<Payment>> _payments;
+    };
+
     // The market step's arithmetic, with no core dependency so the self-tests can run
     // and time it on synthetic houses. All buffers are members and only ever cleared,
     // so a running realm allocates nothing per step once they have grown.
@@ -138,6 +212,19 @@ namespace Market
         // (into Listings()) to `out` and returns how many buyers arrived.
         uint32 PlanBuys(Faction const& fac, double scaleTimesDt, size_t weekday, Rng& rng, std::vector<uint32>& out);
 
+        // The player buyer, after the regular buyers: rolls every buyable player listing
+        // (kBuyable, not kBotOwned, not already in `taken`, quality > 0) and appends the
+        // ones bought this step to `out` (indices into Listings()). The market price is
+        // min(ref, sellerLow's 24 h low).
+        void PlanPlayerBuys(
+            Faction const& fac,
+            PlayerBuyerParams const& params,
+            SellerLow const& sellerLow,
+            double dtHours,
+            std::vector<uint32> const& taken,
+            Rng& rng,
+            std::vector<uint32>& out);
+
         // The house's per-item state, for the self-tests.
         size_t ItemCount() const { return _state.size(); }
 
@@ -146,6 +233,7 @@ namespace Market
         std::vector<Listing> _listings;
         std::vector<ItemState> _state;
         std::vector<uint32> _owners;  // scratch: one item's owners, for the distinct count
+        std::vector<char> _taken;     // scratch: listings the regular buyers already took
 
         // Per-item buyer rate, rebuilt only when the scale/dt or weekday changes.
         std::vector<float> _buyerLambda;

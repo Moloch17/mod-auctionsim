@@ -74,6 +74,12 @@ namespace Market
     // accumulated: what ReservationRatio samples from. Parse stores curves this way.
     Curve CumulativeCurve(Curve const& w);
 
+    // The CURVE's share of buyers paying at least ratio x ref, from the file's w[b]:
+    // w[b] at kRatioEdges[b], linear between edges, 0 from the last edge (5.0) up and
+    // w[0] below the first (0.25) -- the survival function the reservation draw
+    // samples. Clamped to [0, 1].
+    double CurveShare(Curve const& w, double ratio);
+
     // Reservation as a ratio to ref, as ml/s6_market_sim.py draws it: bin b = the number
     // of cumulative masses below uBin (at most 8), then uniform in
     // [kRatioEdges[b], kRatioEdges[b+1]) by uIn. Always in [0.25, 5.0).
@@ -96,6 +102,7 @@ namespace Market
         uint32 craftEnd = 0;
         float craftMargin = 0.0f;
         uint32 vendorBuyGuard = 0;  // per-unit vendor BuyPrice of a vendor-stocked item, 0 = none
+        uint8 quality = 1;          // item_template.Quality (0 grey: the player buyer never buys it)
     };
 
     struct Reagent
@@ -143,7 +150,8 @@ namespace Market
         std::vector<Item> items;
         std::unordered_map<uint32, uint32> itemIndex;  // itemId -> index into items
         std::vector<Reagent> craft;
-        std::vector<Curve> curves;  // cumulative (CumulativeCurve), not the file's shares
+        std::vector<Curve> curves;       // cumulative (CumulativeCurve), not the file's shares
+        std::vector<Curve> curveShares;  // the file's w[b], same indices (the player buyer's price factor)
         std::vector<std::array<float, kWeekdays>> weekdays;
         std::vector<PolicyRow> policies;
         std::unordered_map<uint64, uint32> policyIndex;  // PolicyKey -> index into policies
@@ -175,6 +183,7 @@ namespace Market
         uint32 sellPrice = 0;
         uint32 maxStack = 1;
         uint32 vendorBuyGuard = 0;  // vendor BuyPrice when a vendor stocks it, else 0
+        uint8 quality = 1;          // item_template.Quality
     };
     using ItemFactsFn = std::function<ItemFacts(uint32 itemId)>;
 

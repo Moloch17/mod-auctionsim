@@ -76,6 +76,20 @@ ASConfig::ASConfig(std::string const& filepath, bool& outLoaded)
     }
     this->marketBots = sConfigMgr->GetOption<uint32>("AuctionSim.Market.Bots", 100);
     this->marketScale = sConfigMgr->GetOption<float>("AuctionSim.Market.Scale", 0.1f);
+    this->marketPlayerSellHours = sConfigMgr->GetOption<float>("AuctionSim.Market.PlayerSellHours", 24.0f);
+    if (!(this->marketPlayerSellHours >= 0.0f))
+    {
+        LOG_ERROR("module", "AuctionSim: AuctionSim.Market.PlayerSellHours must be >= 0; using 24");
+        this->marketPlayerSellHours = 24.0f;
+    }
+    this->marketPlayerLiquidity = sConfigMgr->GetOption<float>("AuctionSim.Market.PlayerLiquidity", 0.5f);
+    if (!(this->marketPlayerLiquidity >= 0.0f))
+    {
+        LOG_ERROR("module", "AuctionSim: AuctionSim.Market.PlayerLiquidity must be >= 0; using 0.5");
+        this->marketPlayerLiquidity = 0.5f;
+    }
+    this->marketPlayerQualityBonus = sConfigMgr->GetOption<bool>("AuctionSim.Market.PlayerQualityBonus", false);
+    this->marketPlayerGoldPerDay = sConfigMgr->GetOption<uint32>("AuctionSim.Market.PlayerGoldPerDay", 0);
     if (!(this->marketScale >= 0.0f))
     {
         LOG_ERROR("module", "AuctionSim: AuctionSim.Market.Scale must be >= 0; using 0.1");

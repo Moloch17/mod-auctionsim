@@ -4,7 +4,7 @@
 # update. When it warns, copy the new keys from the refreshed auctionsim.conf.dist
 # (kept current in etc/modules/) into your auctionsim.conf. The module never edits
 # auctionsim.conf itself; missing keys fall back to built-in defaults meanwhile.
-AuctionSim.ConfigVersion = 3
+AuctionSim.ConfigVersion = 4
 
 # Enable or disable the entire module
 AuctionSim.Enabled = 0
@@ -47,6 +47,32 @@ AuctionSim.Market.Bots = 100
 # auctions per faction, 0.1 = ~6k). Scales both posting and buying. The realm's
 # population doesn't matter: the market works the same with 1 player or 1000.
 AuctionSim.Market.Scale = 0.1
+
+# Market mode: the player buyer. On a small realm an item's ordinary buyers come
+# rarely, so a player's fairly priced listing could wait weeks. The player buyer
+# gives every PLAYER listing (never the market sellers' or the buyer bot's) its own
+# chance to sell each 30-minute step, set here rather than by Market.Scale. It pays
+# the full buyout through the buyer bot, so it CREATES GOLD for the selling player.
+# Grey items are never bought, nor anything above the vendor price of a vendor item.
+#
+# PlayerSellHours: at full liquidity, 95% of listings priced at the market price
+#   (the lower of the item's reference price and the cheapest market-seller listing)
+#   sell within this many hours. Pricier listings sell more slowly, and almost never
+#   at 3x or more. 0 turns the player buyer off.
+AuctionSim.Market.PlayerSellHours = 24
+
+# PlayerLiquidity: how much an item's real demand slows it down. Each item is scaled
+# by min(1, (its Lordaeron buyers per hour / 0.5) ^ PlayerLiquidity): 0 = every item
+# sells at the full rate, 1 = rarely bought items sell much more slowly.
+AuctionSim.Market.PlayerLiquidity = 0.5
+
+# PlayerQualityBonus: 1 counts better items as more in demand for the liquidity
+# above (white x1, green x1.5, blue x2.5, epic and up x4). 0 = off.
+AuctionSim.Market.PlayerQualityBonus = 0
+
+# PlayerGoldPerDay: the most gold the player buyer pays any one character over a
+# rolling 24 hours; a purchase that would go over it is skipped. 0 = no limit.
+AuctionSim.Market.PlayerGoldPerDay = 0
 
 # Replay mode: whether the bot bids. 1 (the default, the module's long-standing
 # behaviour) lets it outbid players and open bidding on players' auctions; 0 stops

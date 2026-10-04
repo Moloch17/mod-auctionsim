@@ -118,6 +118,9 @@ public:
         std::vector<std::string> problems;
     };
     PurgeReport PurgeMarket(bool confirm);
+    // Pushes the config's player-buyer settings to the running market (if any).
+    void ApplyPlayerBuyer();
+
     // AuctionSim.Replay.Bidding, live: the next scan and the queue follow it at once.
     void SetReplayBidding(bool enabled)
     {

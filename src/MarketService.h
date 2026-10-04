@@ -2,6 +2,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <string>
 #include <vector>
 #include "AuctionHouseMgr.h"
@@ -40,6 +41,19 @@ public:
 
     // Market.Scale; applies to the next step.
     void SetScale(float scale);
+
+    // AuctionSim.Market.Player*: the player buyer (sell hours, liquidity, quality bonus)
+    // and the per-character gold limit (gold per rolling 24 h, 0 = none). Live from the
+    // next step.
+    void SetPlayerBuyer(Market::PlayerBuyerParams const& params, uint32 goldPerDay);
+
+    // The player buyer's purchases queued and gold paid on a house over the last 24 h.
+    struct PlayerBuyerTotals
+    {
+        uint32 purchases = 0;
+        uint64 copper = 0;
+    };
+    PlayerBuyerTotals GetPlayerBuyerTotals(size_t faction) const;
     float GetScale() const { return _scale; }
 
     // Resolves (creating if needed) up to `bots` sellers per faction. Pending means
@@ -86,6 +100,8 @@ public:
         uint32 listingsCarried = 0;
         uint32 buyers = 0;
         uint32 buysQueued = 0;
+        uint32 playerBuys = 0;     // player buyer purchases queued
+        uint32 playerCapped = 0;   // skipped by the per-character gold limit
         long long micros = 0;
     };
     HouseStats const& LastStats(size_t faction) const { return _stats[faction]; }
@@ -155,5 +171,17 @@ private:
     std::array<Market::PriceMemory, Market::kFactions> _memories;
     std::array<uint64, Market::kFactions> _memoryPrunedAt{};
     std::vector<uint32> _slotOwners;
+
+    Market::PlayerBuyerParams _playerBuyer;
+    std::array<Market::SellerLow, Market::kFactions> _sellerLows;
+    uint64 _playerGoldLimitCopper = 0;
+    Market::GoldLedger _playerLedger;  // per character, both houses (a character sells on one)
+    struct Payment
+    {
+        uint64 time;
+        uint64 copper;
+    };
+    std::array<std::deque<Payment>, Market::kFactions> _playerPayments;  // per house, last 24 h
+    std::vector<uint32> _playerClaims;
     std::vector<Market::Listing> _fillScratch;
 };

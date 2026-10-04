@@ -1866,6 +1866,174 @@ namespace
         return Pass(name);
     }
 
+    TestResult TestMarketPlayerBuyer()
+    {
+        std::string const name = "Market player buyer";
+        auto near = [](double a, double b) { return std::fabs(a - b) < 1e-6; };
+
+        // Market price: the lower of ref and the cheapest market-seller listing.
+        if (Market::PlayerMarketPrice(120, 50) != 50 || Market::PlayerMarketPrice(120, 200) != 120 ||
+            Market::PlayerMarketPrice(120, Market::Listing::kNoBuyout) != 120)
+        {
+            return Fail(name, "market price isn't min(ref, cheapest seller listing)");
+        }
+
+        // Liquidity: min(1, (b / 0.5)^liquidity), b x the quality factor with the bonus on.
+        Market::PlayerBuyerParams off;
+        Market::PlayerBuyerParams bonus;
+        bonus.qualityBonus = true;
+        Market::PlayerBuyerParams flat;
+        flat.liquidity = 0.0;
+        if (!near(Market::PlayerLiquidityFactor(0.125, 1, off), 0.5) ||
+            !near(Market::PlayerLiquidityFactor(0.125, 3, off), 0.5) ||
+            !near(Market::PlayerLiquidityFactor(0.125, 3, bonus), std::sqrt(0.625)) ||
+            !near(Market::PlayerLiquidityFactor(0.125, 4, bonus), 1.0) ||
+            !near(Market::PlayerLiquidityFactor(0.125, 5, bonus), 1.0) ||
+            !near(Market::PlayerLiquidityFactor(2.0, 1, off), 1.0) ||
+            !near(Market::PlayerLiquidityFactor(0.01, 1, flat), 1.0) ||
+            Market::PlayerLiquidityFactor(5.0, 0, bonus) != 0.0)
+        {
+            return Fail(name, "liquidity math wrong");
+        }
+
+        // Price factor: 1 at or below m; above it w(r) / w(1) on the CURVE shares.
+        Market::Curve shares = {1, 0.9f, 0.8f, 0.7f, 0.5f, 0.3f, 0.2f, 0.1f, 0.05f};
+        if (Market::PlayerPriceFactor(shares, 100, 100) != 1.0 || Market::PlayerPriceFactor(shares, 60, 100) != 1.0 ||
+            !near(Market::PlayerPriceFactor(shares, 115, 100), 0.6) ||
+            !near(Market::PlayerPriceFactor(shares, 107.5, 100), 0.8) ||
+            !near(Market::PlayerPriceFactor(shares, 200, 100), 0.2) ||
+            !near(Market::PlayerPriceFactor(shares, 300, 100), 0.1) ||
+            Market::PlayerPriceFactor(shares, 600, 100) != 0.0)
+        {
+            return Fail(name, "price factor wrong");
+        }
+
+        // Chance: at full liquidity and price, 95% within PlayerSellHours; 0 hours = off.
+        if (!near(Market::PlayerBuyChance(24, 1, 1, 24), 0.95) || Market::PlayerBuyChance(0, 1, 1, 0.5) != 0.0)
+        {
+            return Fail(name, "buy chance wrong");
+        }
+
+        // Which listings it takes. Linen (ref 120): a seller's at 50 (so m = 50), a
+        // player's cheaper one at 40 (doesn't move m) already taken by a regular buyer,
+        // the buyer bot's at 10, a player's at 60 held back by the vendor guard, and a
+        // player's at 45 -- the only one it may buy. Potion turned grey: never.
+        Market::Data data;
+        std::string error;
+        if (!ParseFixture(MarketFixture(), data, error))
+        {
+            return Fail(name, error);
+        }
+        Market::Faction& fac = data.factions[0];
+        uint32 const linen = static_cast<uint32>(fac.FindItem(2589));
+        uint32 const potion = static_cast<uint32>(fac.FindItem(118));
+        fac.items[potion].quality = 0;
+        Market::Engine engine;
+        auto add = [&engine](uint32 item, uint32 perUnit, uint32 owner, uint32 id, uint8 flags) {
+            Market::Listing listing;
+            listing.itemIdx = item;
+            listing.perUnit = perUnit;
+            listing.count = 1;
+            listing.owner = owner;
+            listing.auctionId = id;
+            listing.flags = flags;
+            engine.Listings().push_back(listing);
+        };
+        uint8 const buyable = Market::Listing::kBuyable;
+        add(linen, 50, 900, 1, buyable | Market::Listing::kBotOwned);
+        add(linen, 40, 5, 2, buyable);
+        add(linen, 10, 77, 3, 0);  // the buyer bot's: never buyable
+        add(linen, 60, 6, 4, 0);   // a player's above the vendor guard
+        add(linen, 45, 7, 5, buyable);
+        add(potion, 10, 8, 6, buyable);
+        engine.BuildState(fac.items.size());
+        if (engine.State(linen).cheapestSeller != 50)
+        {
+            return Fail(name, "cheapest seller listing counted a player's");
+        }
+        std::vector<uint32> taken;
+        for (uint32 i = 0; i < engine.Listings().size(); ++i)
+        {
+            if (engine.Listings()[i].auctionId == 2)
+            {
+                taken.push_back(i);
+            }
+        }
+        Market::PlayerBuyerParams fast;
+        fast.sellHours = 0.0001;  // every eligible listing is bought
+        fast.liquidity = 0.0;
+        Market::Rng rng(9);
+        uint64 const t = 1783296000ULL;
+        Market::SellerLow sellerLow;
+        sellerLow.Fold(engine, fac.items.size(), t);
+        std::vector<uint32> out;
+        engine.PlanPlayerBuys(fac, fast, sellerLow, 0.5, taken, rng, out);
+        if (out.size() != 1 || engine.Listings()[out[0]].auctionId != 5)
+        {
+            return Fail(name, Acore::StringFormat("bought {} listing(s), want only the player's at 45", out.size()));
+        }
+        // Off: nothing.
+        out.clear();
+        Market::PlayerBuyerParams none;
+        none.sellHours = 0.0;
+        engine.PlanPlayerBuys(fac, none, sellerLow, 0.5, taken, rng, out);
+        if (!out.empty())
+        {
+            return Fail(name, "bought with PlayerSellHours = 0");
+        }
+
+        // The market price is the 24 h low of seller listings: buying out the seller's 50
+        // (leaving one at 80) doesn't raise it for 12-24 h, so a flipper can't relist at 80.
+        Market::Engine after;
+        Market::Listing sellerCopy;
+        sellerCopy.itemIdx = linen;
+        sellerCopy.perUnit = 80;
+        sellerCopy.owner = 900;
+        sellerCopy.flags = buyable | Market::Listing::kBotOwned;
+        after.Listings().push_back(sellerCopy);
+        after.BuildState(fac.items.size());
+        uint64 const hour = 3600;
+        uint32 lows[4] = {};
+        uint64 const at[4] = {t + hour, t + 12 * hour, t + 24 * hour, t + 36 * hour};
+        for (int k = 0; k < 4; ++k)
+        {
+            sellerLow.Fold(after, fac.items.size(), at[k]);
+            lows[k] = sellerLow.Low(linen);
+        }
+        // t is a bucket boundary: the 50 seen at t stays through the next 12 h bucket
+        // (t + 12 h), then only the 80s remain (t + 24 h on).
+        if (t % Market::SellerLow::kBucketSeconds != 0 || lows[0] != 50 || lows[1] != 50 || lows[2] != 80 ||
+            lows[3] != 80)
+        {
+            return Fail(name, Acore::StringFormat(
+                "24 h seller low after the buyout: {} / {} / {} / {} (want 50, 50, 80, 80)",
+                lows[0], lows[1], lows[2], lows[3]));
+        }
+        if (Market::PlayerMarketPrice(fac.items[linen].ref, lows[1]) != 50)
+        {
+            return Fail(name, "the market price rose after the cheapest seller copy was bought out");
+        }
+
+        // The per-character gold limit over a rolling 24 h; 0 = no limit.
+        Market::GoldLedger ledger;
+        bool const first = ledger.TryCharge(1, 6000, t, 10000);
+        bool const second = ledger.TryCharge(1, 6000, t + 100, 10000);  // 12000 > 10000
+        bool const other = ledger.TryCharge(2, 6000, t + 100, 10000);   // another character
+        bool const later = ledger.TryCharge(1, 6000, t + Market::GoldLedger::kWindowSeconds, 10000);
+        bool const unlimited = ledger.TryCharge(3, 1000000000, t, 0);
+        if (!first || second || !other || !later || !unlimited ||
+            ledger.PaidWithin(1, t + Market::GoldLedger::kWindowSeconds) != 6000)
+        {
+            return Fail(name, "the gold limit's rolling window is wrong");
+        }
+        ledger.Prune(t + 3 * Market::GoldLedger::kWindowSeconds);
+        if (ledger.Owners() != 0)
+        {
+            return Fail(name, "Prune kept owners with nothing in the window");
+        }
+        return Pass(name);
+    }
+
     TestResult TestMarketScaleMath()
     {
         std::string const name = "Market scale math";
@@ -2890,6 +3058,7 @@ namespace AuctionSimTests
             TestMarketQuantileDraw(),
             TestMarketPriceMemory(),
             TestMarketReferenceAnchor(),
+            TestMarketPlayerBuyer(),
             TestMarketReservationBounds(),
             TestMarketScaleMath(),
             TestMarketPricingAndBuyers(),
