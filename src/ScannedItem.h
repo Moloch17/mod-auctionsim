@@ -24,17 +24,21 @@ bool ParseStatBlock(std::vector<std::string_view> const& fields, size_t offset, 
 
 // One (faction, itemID, suffix) bucket of compiled market data, produced by
 // data/compile-data.cpp from real Auctioneer scans. Every item row is a FIXED
-// kRowFields (41) fields:
+// kRowFields (54) fields:
 //
 //   faction : itemID : suffix : priceSampleCount
 //     : <12 price stats> : <12 stack-size stats> : <12 listing-count stats>
-//     : listingSnapshotCount
+//     : <12 bid-ratio stats> : bidRatioSampleCount : listingSnapshotCount
 //
-//   price    per-unit buyout price. priceSampleCount = # buyout listings seen.
-//   stack    listing stack size. Same record set as price. All-1 for gear
-//            (written out anyway to keep every row one width).
-//   listing  how many auctions of this item exist per AH snapshot (every
-//            auction, buyout or bid-only). listingSnapshotCount = # snapshots.
+//   price     per-unit buyout price. priceSampleCount = # buyout listings seen.
+//   stack     listing stack size. Same record set as price. All-1 for gear
+//             (written out anyway to keep every row one width).
+//   listing   how many auctions of this item exist per AH snapshot (every
+//             auction, buyout or bid-only). listingSnapshotCount = # snapshots.
+//   bidRatio  starting bid as a fraction of buyout (MINBID / BUYOUT), in basis
+//             points (fraction * 10000). bidRatioSampleCount = # listings that
+//             had both a buyout and a min-bid. Reads 10000 (ratio 1.0) for
+//             items with no observed min-bid data.
 //
 // Every listing/buying decision runs off the adjusted stats and the quartile
 // band, never the raw min/max, so one extreme listing can't move the bot's idea
@@ -44,8 +48,9 @@ class ScannedItem
 public:
     static constexpr size_t kIdentityFields = 4;  // faction, itemID, suffix, priceSampleCount
     static constexpr size_t kStatsPerBlock = 12;  // one StatBlock
-    static constexpr size_t kStatBlockCount = 3;  // price, stack, listing-count
-    static constexpr size_t kRowFields = kIdentityFields + kStatsPerBlock * kStatBlockCount + 1;  // 41
+    static constexpr size_t kStatBlockCount = 4;  // price, stack, listing-count, bid-ratio
+    // + 2 trailing counts: bidRatioSampleCount, then listingSnapshotCount (last).
+    static constexpr size_t kRowFields = kIdentityFields + kStatsPerBlock * kStatBlockCount + 2;  // 54
 
 private:
     uint8 factionNum = 0;
@@ -56,6 +61,8 @@ private:
     StatBlock price;
     StatBlock stack;
     StatBlock listing;
+    StatBlock bidRatio;  // MINBID / BUYOUT per listing, in basis points (fraction * 10000)
+    uint32 bidRatioSampleCount = 0;
     uint32 listingSnapshotCount = 0;
 
     ScannedItem() = default;
@@ -83,6 +90,10 @@ public:
     // chasing a listing priced past the upper-middle of the market.
     uint32 GetBuyCeiling() const;
 
+    // Low end of the band a bid valuation is rolled from: the 25th percentile,
+    // never above GetMarketPrice(). See AuctionPricing::RollBidValuation.
+    uint32 GetBidValuationLow() const;
+
     // The stack size the market conventionally lists this item at -- outlier-
     // trimmed mode, i.e. "the size sellers actually use", not an average that can
     // fall between two conventional sizes. Always 1 for equippable gear.
@@ -100,6 +111,21 @@ public:
 
     // Number of AH snapshots this item appeared in (confidence for the count stat).
     uint32 GetListingSnapshotCount() const { return listingSnapshotCount; }
+
+    // Starting bid as a fraction of buyout, in basis points (bp / 10000 = fraction).
+    // The listing path stays in bp end-to-end (see AuctionPricing::RollStartBid).
+    // Typical is the outlier-trimmed median with the same fallback chain as the
+    // price getters; an all-zero bucket yields 10000 (ratio 1.0 -> startbid ==
+    // buyout). Low/high fall back to typical so a thin bucket collapses toward it
+    // and RollStartBid widens it into a small synthetic band.
+    uint32 GetBidRatioTypicalBp() const;
+    uint32 GetBidRatioLowBp() const;
+    uint32 GetBidRatioHighBp() const;
+    uint32 GetBidRatioSampleCount() const { return bidRatioSampleCount; }
+
+    // Typical bid ratio as a plain fraction (bp / 10000). For tests / potential UI;
+    // the listing path uses the *Bp accessors directly.
+    float GetBidRatioTypical() const;
 
     // Parses one fixed kRowFields-field auctionsim.dat item row. std::nullopt if malformed.
     static std::optional<ScannedItem> TryParse(std::string_view dataLine);

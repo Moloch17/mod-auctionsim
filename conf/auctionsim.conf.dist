@@ -1,3 +1,11 @@
+# Config schema version -- DO NOT EDIT.
+# The module compares this to the version it was built for and warns a GM at login
+# (and in the addon window) if your auctionsim.conf is behind after a module
+# update. When it warns, copy the new keys from the refreshed auctionsim.conf.dist
+# (kept current in etc/modules/) into your auctionsim.conf. The module never edits
+# auctionsim.conf itself; missing keys fall back to built-in defaults meanwhile.
+AuctionSim.ConfigVersion = 3
+
 # Enable or disable the entire module
 AuctionSim.Enabled = 0
 
@@ -7,8 +15,46 @@ AuctionSim.BotAccountID = 0
 # Bot character guid
 AuctionSim.BotCharacterID = 0
 
-# Do a scan on server startup
+# Do a scan on server startup (in Market mode: one market step)
 AuctionSim.StartupScan = 0
+
+# ---- Experimental features (the addon's EXPERIMENTAL FEATURES tab) -------------
+# Market mode, its settings below, and Replay bidding are experimental: they work,
+# but their behaviour may still change between releases.
+
+# What runs the auction house. Changing it needs a worldserver restart.
+#
+#   Replay  the bot lists and buys from auctionsim.dat, scanned prices of a real
+#           market (the default; this is the module's original behaviour)
+#   Market  named seller bots post and buyers buy from auctionsim_market.dat, a
+#           market learned from Warmane - Lordaeron (see ml/MARKET_FORMAT.md). Each
+#           faction gets AuctionSim.Market.Bots sellers whose names show in the AH.
+#           Their characters are created by the module on first start, on accounts
+#           named AHSIMMKTA01.. / AHSIMMKTH01.. that nobody can log into. Buyers buy
+#           players' listings too: that is how players sell to the market. The
+#           buyer is still the bot character set below (BotAccountID/BotCharacterID).
+#           Needs a current auctionsim_market.dat next to this file; without one the
+#           module refuses to run and tells GMs at login.
+AuctionSim.Mode = Replay
+
+# Market mode: named sellers per faction. Names come from auctionsim_market.dat in
+# order, skipping any already taken on this realm, so fewer may be available. Market
+# volume does not depend on this number, only how many names it is spread over.
+# Applied at restart or with ".auctionsim market reload".
+AuctionSim.Market.Bots = 100
+
+# Market mode: market size as a fraction of Lordaeron's (1 = Lordaeron's ~60k
+# auctions per faction, 0.1 = ~6k). Scales both posting and buying. The realm's
+# population doesn't matter: the market works the same with 1 player or 1000.
+AuctionSim.Market.Scale = 0.1
+
+# Replay mode: whether the bot bids. 1 (the default, the module's long-standing
+# behaviour) lets it outbid players and open bidding on players' auctions; 0 stops
+# all bidding -- no new bids, and bids already queued are dropped. Buyouts are
+# unaffected. Applies from the next scan when changed in the addon. Market mode
+# never bids either way.
+AuctionSim.Replay.Bidding = 1
+# ---- End of experimental features ------------------------------------------------
 
 # Maximum required level for items the bot will list. Items requiring a higher
 # level to use are skipped before being created. 0 disables this filter.
@@ -19,7 +65,7 @@ AuctionSim.MaxRequiredLevel = 0
 # are skipped before being created. 0 disables this filter.
 AuctionSim.MaxItemLevel = 0
 
-# Per-category listing multiplier vs. the real market.
+# Replay mode: per-category listing multiplier vs. the real market.
 #
 # The bot decides how full to keep each (category, quality) from real Auctioneer
 # scan data baked into auctionsim.dat: it tops a category up only once its live

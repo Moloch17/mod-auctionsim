@@ -26,10 +26,44 @@ public:
 
     ASConfig(std::string const& filepath, bool& outLoaded);
 
+    // Data-format version read from the first line of auctionsim.dat ("AUCTIONSIM_DAT
+    // <v>"). 0 means the file had no stamp (a pre-versioning file) or couldn't be
+    // opened. Set before any early return so AuctionSim can report have-vs-need even
+    // when the load is refused.
+    uint32 GetFoundDataVersion() const { return foundDataVersion; }
+
+    // Peels an optional "AUCTIONSIM_DAT <v>" stamp off line 1 of the data file.
+    // Returns the version (0 if the line is not a stamp) and sets `consumed` true
+    // when the line WAS the stamp (so the caller advances to the real header line).
+    static uint32 ParseDataVersionLine(std::string const& line, bool& consumed);
+
     // Level caps for newly-listed items; 0 disables the respective check. Read once
     // from AuctionSim.MaxRequiredLevel / AuctionSim.MaxItemLevel at construction.
     uint32 maxRequiredLevel = 0;
     uint32 maxItemLevel = 0;
+
+    // AuctionSim.Replay.Bidding (experimental): false stops the Replay bot bidding --
+    // no opening bids, no outbids, queued bids dropped. Buyouts are unaffected.
+    bool replayBidding = true;
+
+    // The value of AuctionSim.Replay.Bidding as read from the conf: empty (missing key)
+    // -> true, "1"/"true"/"yes" -> true, "0"/"false"/"no" -> false (any case). False
+    // with `out` left alone on anything else.
+    static bool ParseReplayBidding(std::string_view text, bool& out);
+    // Re-reads AuctionSim.Replay.Bidding from ConfigMgr (after a reload).
+    void LoadReplayBidding();
+
+    // AuctionSim.Mode: Replay (false, the default) replays auctionsim.dat's scanned
+    // market; Market (true) runs the learned market from auctionsim_market.dat.
+    bool marketMode = false;
+    // AuctionSim.Market.Bots: named sellers per faction (capped by the file's names).
+    uint32 marketBots = 100;
+    // AuctionSim.Market.Scale: market size as a fraction of Lordaeron's.
+    float marketScale = 0.1f;
+
+    // "Replay" / "Market", any case. False on anything else.
+    static bool ParseMode(std::string_view text, bool& outMarket);
+    static char const* ModeName(bool market) { return market ? "Market" : "Replay"; }
 
     // Every item id stocked by at least one vendor (from npc_vendor). The buy-side
     // vendor-buy-price guard only applies to items in this set: an
@@ -111,4 +145,6 @@ private:
     void LoadVendorItems();
 
     void UnpackQualityString(std::string_view qualityString, int itemClass);
+
+    uint32 foundDataVersion = 0;
 };

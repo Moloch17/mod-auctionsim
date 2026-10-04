@@ -15,12 +15,21 @@ class Player;
 class AuctionSimAddonBridge : public PlayerScript
 {
 public:
-    // Scoped to just the one hook this class needs (PlayerScript::PlayerScript falls back
+    // Scoped to just the hooks this class needs (PlayerScript::PlayerScript falls back
     // to enabling every hook when the list is left empty, so this is a minor precision/
-    // efficiency choice, not something required for the hook to fire).
-    AuctionSimAddonBridge() : PlayerScript("AuctionSimAddonBridge", {PLAYERHOOK_ON_BEFORE_SEND_CHAT_MESSAGE}) {}
+    // efficiency choice, not something required for the hooks to fire).
+    AuctionSimAddonBridge()
+        : PlayerScript(
+              "AuctionSimAddonBridge", {PLAYERHOOK_ON_BEFORE_SEND_CHAT_MESSAGE, PLAYERHOOK_ON_LOGIN})
+    {
+    }
 
     void OnPlayerBeforeSendChatMessage(Player* player, uint32& type, uint32& lang, std::string& msg) override;
+
+    // GM-only plain-text warnings for an outdated config / data file, at every login
+    // while the condition holds. Reaches GMs whether or not the addon is installed;
+    // module<->addon version mismatch is reported separately via the WHOAMI reply.
+    void OnPlayerLogin(Player* player) override;
 };
 
 void AddAuctionSimAddonBridgeScript();

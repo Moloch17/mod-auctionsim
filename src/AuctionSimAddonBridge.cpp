@@ -9,10 +9,14 @@
 #include "ASParse.h"
 #include "AuctionHouseMgr.h"
 #include "AuctionSim.h"
+#include "AuctionSimVersion.h"
+#include "MarketService.h"
 #include "CharacterCache.h"
+#include "Chat.h"
 #include "Common.h"
 #include "Config.h"
 #include "GameTime.h"
+#include "Log.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -43,7 +47,14 @@ namespace
         constexpr std::string_view Test = "TEST";
         constexpr std::string_view CleanOverCap = "CLEANOVERCAP";
         constexpr std::string_view ShowQueue = "SHOWQUEUE";
+        constexpr std::string_view RunQueue = "RUNQUEUE";
         constexpr std::string_view SetBotChar = "SETBOTCHAR";
+        constexpr std::string_view MarketFill = "MARKETFILL";    // [alliance|horde]
+        constexpr std::string_view MarketPurge = "MARKETPURGE";  // [confirm]
+        constexpr std::string_view MarketStatus = "MARKETSTATUS";
+        constexpr std::string_view MarketReload = "MARKETRELOAD";
+        // Sent after the GM ticks Market Mode and answers Yes to the restart prompt.
+        constexpr std::string_view RestartWorld = "RESTARTWORLD";
 
         // Outbound: server -> client message types.
         constexpr std::string_view Error = "ERROR";
@@ -54,13 +65,30 @@ namespace
         constexpr std::string_view TestResult = "TESTRESULT";
         constexpr std::string_view TestDone = "TESTDONE";
         constexpr std::string_view QueueInfo = "QUEUEINFO";
+        constexpr std::string_view RunQueueResult = "RUNQUEUERESULT";
         constexpr std::string_view CleanResult = "CLEANRESULT";
         constexpr std::string_view SetBotCharResult = "SETBOTCHARRESULT";
+        // MARKETMSG\t<line> -- one line of a market command's output, for the Results box.
+        constexpr std::string_view MarketMsg = "MARKETMSG";
+        // PURGEASK\t<accounts>\t<characters>\t<auctions> -- a purge dry-run found something to
+        // delete; the addon asks the GM to confirm, then sends MARKETPURGE\tconfirm.
+        constexpr std::string_view PurgeAsk = "PURGEASK";
+        // NOTICE\t<kind>\t<a>\t<b>\t<moduleVersion> -- one-shot warnings shown once
+        // per version in the addon's Results log. kind: "config" (a<b = have<need),
+        // "data" / "market" (a vs b = have vs need; market have 0 = missing), "version"
+        // (a = addon ver or "?", b = module ver).
+        constexpr std::string_view Notice = "NOTICE";
     }
 
     // SETCONFIG keys awaiting a SAVECONFIG. One global set: worldserver hooks are
     // single-threaded and there is one bot / one GM editing at a time.
     std::unordered_set<std::string> stagedKeys;
+
+    // A Mode change only takes effect at restart, so it is kept here rather than on
+    // the running config (which must keep saying what actually runs). Once set, it is
+    // what the panel shows: the value auctionsim.conf will start with.
+    bool stagedMarketMode = false;
+    bool modeChanged = false;
 
     void SendMessage(Player* target, std::string const& body)
     {
@@ -120,6 +148,12 @@ namespace
         SendMessage(target, Acore::StringFormat("{}\tStartupScan\t{}", Msg::Config, sim->startupScan ? 1 : 0));
         SendMessage(target, Acore::StringFormat("{}\tMaxRequiredLevel\t{}", Msg::Config, config->maxRequiredLevel));
         SendMessage(target, Acore::StringFormat("{}\tMaxItemLevel\t{}", Msg::Config, config->maxItemLevel));
+        // Wire keys stay dotless: a dotted key is a mask cell to both ends.
+        bool modeShown = modeChanged ? stagedMarketMode : config->marketMode;
+        SendMessage(target, Acore::StringFormat("{}\tMode\t{}", Msg::Config, ASConfig::ModeName(modeShown)));
+        SendMessage(target, Acore::StringFormat("{}\tMarketBots\t{}", Msg::Config, config->marketBots));
+        SendMessage(target, Acore::StringFormat("{}\tMarketScale\t{:g}", Msg::Config, config->marketScale));
+        SendMessage(target, Acore::StringFormat("{}\tReplayBidding\t{}", Msg::Config, config->replayBidding ? 1 : 0));
 
         for (ASConfig::MaskKeyEntry const& entry : ASConfig::AllMaskKeys())
         {
@@ -194,6 +228,65 @@ namespace
             return;
         }
 
+        if (key == "Mode")
+        {
+            if (!ASConfig::ParseMode(valueStr, stagedMarketMode))
+            {
+                SendError(target, Acore::StringFormat("'{}' is not Replay or Market", valueStr));
+                return;
+            }
+            modeChanged = true;
+            stagedKeys.insert(key);
+            return;
+        }
+        if (key == "ReplayBidding")
+        {
+            // Market mode never bids: the setting only matters in Replay, so it is kept as
+            // it is while Mode is Market (as saved, including a change not yet restarted).
+            if (modeChanged ? stagedMarketMode : config->marketMode)
+            {
+                SendError(target, "Replay Bidding only applies when Market Mode is off; it keeps its saved value.");
+                return;
+            }
+            bool enabled = true;
+            if (!ASConfig::ParseReplayBidding(valueStr, enabled) || valueStr.empty())
+            {
+                SendError(target, Acore::StringFormat("'{}' is not 0 or 1", valueStr));
+                return;
+            }
+            AuctionSim::instance()->SetReplayBidding(enabled);  // live from the next scan
+            stagedKeys.insert(key);
+            return;
+        }
+        if (key == "MarketBots")
+        {
+            uint32 bots = 0;
+            if (!ASParse::Integer(valueStr, bots))
+            {
+                SendError(target, Acore::StringFormat("'{}' is not a valid number", valueStr));
+                return;
+            }
+            config->marketBots = bots;  // used at the next restart / ".auctionsim market reload"
+            stagedKeys.insert(key);
+            return;
+        }
+        if (key == "MarketScale")
+        {
+            float scale = 0.0f;
+            if (!ASParse::Float(valueStr, scale) || scale < 0.0f)
+            {
+                SendError(target, Acore::StringFormat("'{}' is not a valid scale", valueStr));
+                return;
+            }
+            config->marketScale = scale;
+            if (MarketService* market = AuctionSim::instance()->GetMarket())
+            {
+                market->SetScale(scale);  // live from the next step
+            }
+            stagedKeys.insert(key);
+            return;
+        }
+
         uint32 itemClass = 0;
         uint32 quality = 0;
         if (ASConfig::ResolveMaskKey(key, itemClass, quality))
@@ -245,6 +338,22 @@ namespace
             {
                 edits.push_back({key, "", Acore::StringFormat("{}", config->maxItemLevel)});
             }
+            else if (key == "Mode")
+            {
+                edits.push_back({"Mode", "", ASConfig::ModeName(stagedMarketMode)});
+            }
+            else if (key == "ReplayBidding")
+            {
+                edits.push_back({"Replay.Bidding", "", config->replayBidding ? "1" : "0"});
+            }
+            else if (key == "MarketBots")
+            {
+                edits.push_back({"Market.Bots", "", Acore::StringFormat("{}", config->marketBots)});
+            }
+            else if (key == "MarketScale")
+            {
+                edits.push_back({"Market.Scale", "", Acore::StringFormat("{:g}", config->marketScale)});
+            }
             else
             {
                 uint32 itemClass = 0;
@@ -278,12 +387,16 @@ namespace
         {
             return;
         }
+        if (AuctionSim::instance()->IsMarketPurged())
+        {
+            SendError(target, "The market is stopped by a purge until restart or \".auctionsim market reload\".");
+            return;
+        }
 
         auto start = std::chrono::high_resolution_clock::now();
         size_t before = AuctionSim::instance()->GetBuyQueue().size();
 
-        AuctionSim::instance()->ScanAuctions(AuctionHouseId::Alliance);
-        AuctionSim::instance()->ScanAuctions(AuctionHouseId::Horde);
+        AuctionSim::instance()->RunScan();
 
         size_t after = AuctionSim::instance()->GetBuyQueue().size();
         auto end = std::chrono::high_resolution_clock::now();
@@ -371,6 +484,21 @@ namespace
                 status.lastBuyInSeconds));
     }
 
+    void HandleRunQueue(Player* target, std::vector<std::string_view> const&)
+    {
+        if (!RequireEnabled(target))
+        {
+            return;
+        }
+
+        auto start = std::chrono::high_resolution_clock::now();
+        size_t ran = AuctionSim::instance()->RunQueue();
+        auto end = std::chrono::high_resolution_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+
+        SendMessage(target, Acore::StringFormat("{}\t{}\t{}", Msg::RunQueueResult, elapsed, ran));
+    }
+
     // Resolve a character name to its guid + account id (only the server can) and
     // write both to auctionsim.conf. If the module is enabled, restart the bot on it.
     void HandleSetBotChar(Player* target, std::vector<std::string_view> const& tokens)
@@ -444,10 +572,138 @@ namespace
                 "{}\tok\t{}\t{}\t{}\t{}", Msg::SetBotCharResult, name, characterId, accountId, note));
     }
 
-    // First request on load. A reply (GM-only) is the client's cue to build the window.
-    void HandleWhoAmI(Player* target, std::vector<std::string_view> const&)
+    void HandleMarketFill(Player* target, std::vector<std::string_view> const& tokens)
     {
-        SendMessage(target, Acore::StringFormat("{}\tok", Msg::WhoAmI));
+        if (!RequireEnabled(target))
+        {
+            return;
+        }
+        bool ok = false;
+        std::string_view which = tokens.size() > 1 ? tokens[1] : std::string_view{};
+        for (std::string const& line : AuctionSim::instance()->FillMarket(which, ok))
+        {
+            SendMessage(target, Acore::StringFormat("{}\t{}", Msg::MarketMsg, line));
+        }
+    }
+
+    // Not gated: says why the market isn't running when it isn't.
+    void HandleMarketStatus(Player* target, std::vector<std::string_view> const&)
+    {
+        for (std::string const& line : AuctionSim::instance()->DescribeMarketStatus())
+        {
+            SendMessage(target, Acore::StringFormat("{}\t{}", Msg::MarketMsg, line));
+        }
+    }
+
+    void HandleMarketReload(Player* target, std::vector<std::string_view> const&)
+    {
+        std::string note;
+        bool ok = AuctionSim::instance()->ReloadMarket(note);
+        std::string line = Acore::StringFormat("Market reload {}: {}", ok ? "done" : "failed", note);
+        LOG_INFO("module", "AuctionSim: {}", line);
+        SendMessage(target, Acore::StringFormat("{}\t{}", Msg::MarketMsg, line));
+    }
+
+    // The stock restart (as ".server restart 10"): a 10 s countdown the core announces to
+    // players, then exit code 2. Coming back up is the host's job (Docker restart policy,
+    // a service manager or the restarter script). Refused while a shutdown is pending.
+    void HandleRestartWorld(Player* target, std::vector<std::string_view> const&)
+    {
+        constexpr uint32 kRestartDelaySeconds = 10;
+        if (sWorld->IsShuttingDown())
+        {
+            SendError(target, "A shutdown or restart is already pending.");
+            return;
+        }
+        LOG_INFO(
+            "module",
+            "AuctionSim: worldserver restart requested by GM {} (account {}) from the addon to apply AuctionSim.Mode",
+            target->GetName(),
+            target->GetSession()->GetAccountId());
+        sWorld->ShutdownServ(
+            kRestartDelaySeconds, SHUTDOWN_MASK_RESTART, RESTART_EXIT_CODE, "AuctionSim: applying Market mode");
+        SendMessage(
+            target,
+            Acore::StringFormat(
+                "{}\tWorldserver restarting in {} s to apply the mode change.", Msg::MarketMsg, kRestartDelaySeconds));
+    }
+
+    // Not gated on RequireEnabled: removing the footprint must work while disabled.
+    void HandleMarketPurge(Player* target, std::vector<std::string_view> const& tokens)
+    {
+        AuctionSim* sim = AuctionSim::instance();
+        bool const confirm = tokens.size() > 1 && tokens[1] == "confirm";
+        AuctionSim::PurgeReport report = sim->PurgeMarket(confirm);
+        for (std::string const& line : AuctionSim::DescribePurge(report, confirm, sim->IsMarketMode()))
+        {
+            LOG_INFO("module", "AuctionSim: {}", line);
+            SendMessage(target, Acore::StringFormat("{}\t{}", Msg::MarketMsg, line));
+        }
+        if (!confirm && !report.refused && report.accounts > 0)
+        {
+            SendMessage(target,
+                Acore::StringFormat(
+                    "{}\t{}\t{}\t{}", Msg::PurgeAsk, report.accounts, report.characters, report.auctions));
+        }
+    }
+
+    // First request on load. A reply (GM-only) is the client's cue to build the
+    // window. tokens[1], if present, is the addon's "## Version" -- compared here so
+    // a version mismatch (and any outdated config/data) surfaces in the addon's
+    // output window on first open. The extra reply field is ignored by older addons.
+    void HandleWhoAmI(Player* target, std::vector<std::string_view> const& tokens)
+    {
+        std::string_view addonVersion = tokens.size() > 1 ? tokens[1] : std::string_view{};
+
+        SendMessage(target, Acore::StringFormat("{}\tok\t{}", Msg::WhoAmI, AUCTIONSIM_VERSION));
+
+        AuctionSim* sim = AuctionSim::instance();
+        if (sim && sim->IsConfigOutdated())
+        {
+            SendMessage(
+                target,
+                Acore::StringFormat(
+                    "{}\tconfig\t{}\t{}\t{}",
+                    Msg::Notice,
+                    sim->ConfigHaveVersion(),
+                    sim->ConfigNeedVersion(),
+                    AUCTIONSIM_VERSION));
+        }
+        if (sim && sim->IsDataOutdated())
+        {
+            SendMessage(
+                target,
+                Acore::StringFormat(
+                    "{}\tdata\t{}\t{}\t{}",
+                    Msg::Notice,
+                    sim->DataHaveVersion(),
+                    sim->DataNeedVersion(),
+                    AUCTIONSIM_VERSION));
+        }
+        if (sim && sim->IsMarketUnavailable())
+        {
+            SendMessage(
+                target,
+                Acore::StringFormat(
+                    "{}\tmarket\t{}\t{}\t{}",
+                    Msg::Notice,
+                    sim->MarketHaveVersion(),
+                    sim->MarketNeedVersion(),
+                    AUCTIONSIM_VERSION));
+        }
+        if (addonVersion.empty())
+        {
+            SendMessage(
+                target,
+                Acore::StringFormat("{}\tversion\t?\t{}\t{}", Msg::Notice, AUCTIONSIM_VERSION, AUCTIONSIM_VERSION));
+        }
+        else if (addonVersion != AUCTIONSIM_VERSION)  // exact-match policy
+        {
+            SendMessage(
+                target,
+                Acore::StringFormat(
+                    "{}\tversion\t{}\t{}\t{}", Msg::Notice, addonVersion, AUCTIONSIM_VERSION, AUCTIONSIM_VERSION));
+        }
     }
 
     using CommandHandler = void (*)(Player*, std::vector<std::string_view> const&);
@@ -468,7 +724,13 @@ namespace
         {Msg::Test, HandleTest},
         {Msg::CleanOverCap, HandleCleanOverCap},
         {Msg::ShowQueue, HandleShowQueue},
+        {Msg::RunQueue, HandleRunQueue},
         {Msg::SetBotChar, HandleSetBotChar},
+        {Msg::MarketFill, HandleMarketFill},
+        {Msg::MarketPurge, HandleMarketPurge},
+        {Msg::MarketStatus, HandleMarketStatus},
+        {Msg::MarketReload, HandleMarketReload},
+        {Msg::RestartWorld, HandleRestartWorld},
     };
 
     void HandleRequest(Player* player, std::string const& payload)
@@ -514,6 +776,52 @@ void AuctionSimAddonBridge::OnPlayerBeforeSendChatMessage(
     msg.clear();  // swallow -- never let this reach the client as a visible whisper
 
     HandleRequest(player, payload);
+}
+
+void AuctionSimAddonBridge::OnPlayerLogin(Player* player)
+{
+    if (!IsAuthorizedGm(player))
+    {
+        return;
+    }
+
+    AuctionSim* sim = AuctionSim::instance();
+    if (!sim)
+    {
+        return;
+    }
+
+    ChatHandler handler(player->GetSession());
+    if (sim->IsConfigOutdated())
+    {
+        handler.PSendSysMessage(
+            "|cffff8000[AuctionSim]|r Your auctionsim.conf is out of date (config schema v{} < v{}). A current "
+            "auctionsim.conf.dist is in etc/modules/ -- merge the new keys or the module may not behave "
+            "correctly.",
+            sim->ConfigHaveVersion(),
+            sim->ConfigNeedVersion());
+    }
+    if (sim->IsDataOutdated())
+    {
+        handler.PSendSysMessage(
+            "|cffff0000[AuctionSim]|r auctionsim.dat is out of date (data schema v{} vs v{}). Pull the latest "
+            "changes and rebuild the module -- the current data file ships with the repo and is redeployed on "
+            "build. The module has no market data until then.",
+            sim->DataHaveVersion(),
+            sim->DataNeedVersion());
+    }
+    if (sim->IsMarketUnavailable())
+    {
+        handler.PSendSysMessage(
+            "|cffff0000[AuctionSim]|r AuctionSim.Mode is Market but auctionsim_market.dat can't be used ({}; file "
+            "schema v{}, this build needs v{}). The module is not running. Put a current auctionsim_market.dat in "
+            "etc/modules/ (rebuild the module to redeploy the shipped one), or set AuctionSim.Mode = Replay.",
+            sim->MarketError(),
+            sim->MarketHaveVersion(),
+            sim->MarketNeedVersion());
+    }
+    // Module<->addon version mismatch needs the addon's version, so it is reported
+    // from the WHOAMI reply (HandleWhoAmI) into the addon window instead.
 }
 
 void AddAuctionSimAddonBridgeScript() { new AuctionSimAddonBridge(); }

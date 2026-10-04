@@ -42,11 +42,12 @@ SLASH_AUCTIONSIM1 = "/auctionsim"
 SLASH_AUCTIONSIM2 = "/ahsim"
 SlashCmdList["AUCTIONSIM"] = ToggleWindow
 
-AHSim:RegisterHandler(AHSim.OP.WHOAMI, function(status)
+AHSim:RegisterHandler(AHSim.OP.WHOAMI, function(status, serverVersion)
     if status ~= "ok" then
         return
     end
     AHSim.authorized = true
+    AHSim.serverVersion = serverVersion  -- module version, for display; mismatch detail comes via NOTICE
     -- build now so the first /auctionsim is instant and no config push races it
     if AHSim.BuildWindow then
         AHSim.BuildWindow()

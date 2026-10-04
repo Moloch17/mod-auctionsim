@@ -1,5 +1,6 @@
 #include "ASConfig.h"
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -7,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include "ASParse.h"
+#include "AuctionSimVersion.h"
 #include "Config.h"
 #include "DatabaseEnv.h"
 #include "ObjectMgr.h"
@@ -64,6 +66,22 @@ ASConfig::ASConfig(std::string const& filepath, bool& outLoaded)
     this->maxRequiredLevel = sConfigMgr->GetOption<uint32>("AuctionSim.MaxRequiredLevel", 0);
     this->maxItemLevel = sConfigMgr->GetOption<uint32>("AuctionSim.MaxItemLevel", 0);
 
+    LoadReplayBidding();
+
+    std::string mode = sConfigMgr->GetOption<std::string>("AuctionSim.Mode", "Replay");
+    if (!ParseMode(mode, this->marketMode))
+    {
+        LOG_ERROR("module", "AuctionSim: AuctionSim.Mode '{}' is neither Replay nor Market; using Replay", mode);
+        this->marketMode = false;
+    }
+    this->marketBots = sConfigMgr->GetOption<uint32>("AuctionSim.Market.Bots", 100);
+    this->marketScale = sConfigMgr->GetOption<float>("AuctionSim.Market.Scale", 0.1f);
+    if (!(this->marketScale >= 0.0f))
+    {
+        LOG_ERROR("module", "AuctionSim: AuctionSim.Market.Scale must be >= 0; using 0.1");
+        this->marketScale = 0.1f;
+    }
+
     // Independent of auctionsim.dat -- load it even on the early-return paths below so
     // the buy-side guard always has its whitelist.
     LoadVendorItems();
@@ -91,7 +109,31 @@ ASConfig::ASConfig(std::string const& filepath, bool& outLoaded)
         return;
     }
 
-    // Line 1 is "N M": N item rows, preceded by M category-depth rows.
+    // Line 1 is an optional "AUCTIONSIM_DAT <v>" stamp; if present, the real "N M"
+    // header follows on line 2. A file whose stamp differs from the version this
+    // build expects is refused outright -- the row schema will not match.
+    bool stampConsumed = false;
+    this->foundDataVersion = ParseDataVersionLine(line, stampConsumed);
+    if (stampConsumed && !std::getline(stream, line))
+    {
+        LOG_ERROR("module", "AuctionSim: {} has a version stamp but no header line", filepath);
+        outLoaded = false;
+        return;
+    }
+    if (this->foundDataVersion != AUCTIONSIM_DATA_VERSION)
+    {
+        LOG_ERROR(
+            "module",
+            "AuctionSim: {} is data-format v{}, this build needs v{}; refusing to load -- pull the latest "
+            "module changes and rebuild so the shipped auctionsim.dat is redeployed",
+            filepath,
+            this->foundDataVersion,
+            AUCTIONSIM_DATA_VERSION);
+        outLoaded = false;
+        return;
+    }
+
+    // Line 1 (after any stamp) is "N M": N item rows, preceded by M category-depth rows.
     size_t declaredItemRows = 0;
     size_t categoryRows = 0;
     if (!ParseHeaderLine(line, declaredItemRows, categoryRows))
@@ -150,11 +192,81 @@ ASConfig::ASConfig(std::string const& filepath, bool& outLoaded)
     LoadMasks();
 }
 
+bool ASConfig::ParseReplayBidding(std::string_view text, bool& out)
+{
+    std::string lower;
+    for (char c : text)
+    {
+        if (c != ' ' && c != '\t' && c != '\r' && c != '"')
+        {
+            lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+    }
+    if (lower.empty() || lower == "1" || lower == "true" || lower == "yes")
+    {
+        out = true;
+        return true;
+    }
+    if (lower == "0" || lower == "false" || lower == "no")
+    {
+        out = false;
+        return true;
+    }
+    return false;
+}
+
+void ASConfig::LoadReplayBidding()
+{
+    std::string raw = sConfigMgr->GetOption<std::string>("AuctionSim.Replay.Bidding", "", false);
+    if (!ParseReplayBidding(raw, this->replayBidding))
+    {
+        LOG_ERROR("module", "AuctionSim: AuctionSim.Replay.Bidding '{}' is not 0 or 1; bidding stays on", raw);
+        this->replayBidding = true;
+    }
+}
+
+bool ASConfig::ParseMode(std::string_view text, bool& outMarket)
+{
+    std::string lower;
+    for (char c : text)
+    {
+        if (c != ' ' && c != '\t' && c != '\r')
+        {
+            lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+    }
+    if (lower == "replay")
+    {
+        outMarket = false;
+        return true;
+    }
+    if (lower == "market")
+    {
+        outMarket = true;
+        return true;
+    }
+    return false;
+}
+
 bool ASConfig::ParseHeaderLine(std::string const& line, size_t& outItemRows, size_t& outCategoryRows)
 {
     std::istringstream header(line);
     header >> outItemRows >> outCategoryRows;
     return static_cast<bool>(header) && outItemRows > 0;
+}
+
+uint32 ASConfig::ParseDataVersionLine(std::string const& line, bool& consumed)
+{
+    std::istringstream in(line);
+    std::string tag;
+    uint32 version = 0;
+    if ((in >> tag) && tag == "AUCTIONSIM_DAT" && (in >> version))
+    {
+        consumed = true;
+        return version;
+    }
+    consumed = false;
+    return 0;  // legacy unversioned file -- `line` is still the "N M" header
 }
 
 // One category-depth row: faction:class:quality:snapshotCount followed by a
