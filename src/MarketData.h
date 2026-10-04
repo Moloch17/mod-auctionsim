@@ -82,7 +82,7 @@ namespace Market
         uint32 craftBegin = 0;  // [craftBegin, craftEnd) in Faction::craft
         uint32 craftEnd = 0;
         float craftMargin = 0.0f;
-        uint32 vendorBuyGuard = 0;  // per-unit vendor BuyPrice of a vendor-stocked item, 0 = none
+        uint32 vendorBuyGuard = 0;  // vendor price of one of a vendor-stocked item, 0 = none
     };
 
     struct Reagent
@@ -161,7 +161,7 @@ namespace Market
         bool postable = true;  // false when over AuctionSim.MaxRequiredLevel / MaxItemLevel
         uint32 sellPrice = 0;
         uint32 maxStack = 1;
-        uint32 vendorBuyGuard = 0;  // vendor BuyPrice when a vendor stocks it, else 0
+        uint32 vendorBuyGuard = 0;  // vendor price of one when a vendor stocks it, else 0
     };
     using ItemFactsFn = std::function<ItemFacts(uint32 itemId)>;
 

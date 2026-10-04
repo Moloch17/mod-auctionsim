@@ -478,9 +478,9 @@ void AuctionSim::ScanAuctions(AuctionHouseId _AuctionHouseId)
         // vendor -- by buyout or by bid. The cap only applies when a vendor actually
         // stocks the item (npc_vendor), without a stock limit or token cost: a BuyPrice
         // left on an item no vendor sells is stale DB data, not a real floor (0 disables
-        // the check).
+        // the check). BuyPrice buys BuyCount items; the cap is the price of one.
         uint32 vendorBuyPrice = (config->IsVendorSold(auction->item_template) && proto->BuyPrice > 0)
-            ? static_cast<uint32>(proto->BuyPrice)
+            ? AuctionPricing::VendorUnitBuyPrice(proto->BuyPrice, proto->BuyCount)
             : 0;
 
         // Buyout consideration -- only for real buyout auctions the bot doesn't own.

@@ -63,7 +63,9 @@ bool MarketService::LoadFile(
             proto->RequiredLevel, proto->ItemLevel, config.maxRequiredLevel, config.maxItemLevel);
         facts.sellPrice = proto->SellPrice;
         facts.maxStack = std::max<uint32>(1, proto->GetMaxStackSize());
-        facts.vendorBuyGuard = (config.IsVendorSold(itemId) && proto->BuyPrice > 0) ? proto->BuyPrice : 0;
+        facts.vendorBuyGuard = (config.IsVendorSold(itemId) && proto->BuyPrice > 0)
+            ? AuctionPricing::VendorUnitBuyPrice(proto->BuyPrice, proto->BuyCount)
+            : 0;
         return facts;
     });
 
