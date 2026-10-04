@@ -352,12 +352,14 @@ void ASConfig::LoadMasks()
     }
 }
 
-// Every item id stocked by a vendor. Negative npc_vendor.item rows are references
+// Every item id stocked by a vendor in unlimited quantity for gold only
+// (maxcount 0, no ExtendedCost). Negative npc_vendor.item rows are references
 // to other npc_vendor rows, whose own positive item ids this DISTINCT scan already
 // covers, so one query is enough.
 void ASConfig::LoadVendorItems()
 {
-    QueryResult result = WorldDatabase.Query("SELECT DISTINCT item FROM npc_vendor WHERE item > 0");
+    QueryResult result = WorldDatabase.Query(
+        "SELECT DISTINCT item FROM npc_vendor WHERE item > 0 AND maxcount = 0 AND ExtendedCost = 0");
     if (!result)
     {
         return;

@@ -476,8 +476,9 @@ void AuctionSim::ScanAuctions(AuctionHouseId _AuctionHouseId)
 
         // Never pay more per unit than it would cost to buy the item straight from a
         // vendor -- by buyout or by bid. The cap only applies when a vendor actually
-        // stocks the item (npc_vendor): a BuyPrice left on an item no vendor sells is
-        // stale DB data, not a real floor (0 disables the check).
+        // stocks the item (npc_vendor), without a stock limit or token cost: a BuyPrice
+        // left on an item no vendor sells is stale DB data, not a real floor (0 disables
+        // the check).
         uint32 vendorBuyPrice = (config->IsVendorSold(auction->item_template) && proto->BuyPrice > 0)
             ? static_cast<uint32>(proto->BuyPrice)
             : 0;

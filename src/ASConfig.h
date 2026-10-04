@@ -65,10 +65,12 @@ public:
     static bool ParseMode(std::string_view text, bool& outMarket);
     static char const* ModeName(bool market) { return market ? "Market" : "Replay"; }
 
-    // Every item id stocked by at least one vendor (from npc_vendor). The buy-side
+    // Every item id stocked by at least one vendor (from npc_vendor) in unlimited
+    // quantity for gold only. The buy-side
     // vendor-buy-price guard only applies to items in this set: an
     // ItemTemplate::BuyPrice left on an item that no vendor actually sells is stale
-    // DB data and must not block an otherwise-good purchase.
+    // DB data and must not block an otherwise-good purchase, nor must a price that
+    // buys only a few at a time (maxcount) or also costs tokens (ExtendedCost).
     std::unordered_set<uint32> vendorSoldItems;
     bool IsVendorSold(uint32 itemId) const { return vendorSoldItems.count(itemId) > 0; }
 
