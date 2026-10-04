@@ -154,7 +154,8 @@ bidding on a player's auction, as a player would. Unticked, it never bids: it qu
 had already queued. Buying outright is unaffected. Takes effect at once, from the next scan.
 
 It only matters in Replay mode, because Market mode never bids. While Market Mode is ticked the checkbox is greyed out
-and can't be changed; its saved value is kept for when you switch back, and the server refuses to change it.
+and shown unchecked, since nothing bids then; its saved value is kept and shown again when you switch back, and the
+server refuses to change it.
 
 #### Market Bots (box)
 

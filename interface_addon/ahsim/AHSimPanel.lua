@@ -773,12 +773,17 @@ end
 -- note saying why. Called on load from the server's settings and on every toggle.
 local REPLAY_BIDDING_NOTE = "Replay Bidding only applies when Market Mode is off."
 local replayBiddingNote
+-- The saved AuctionSim.Replay.Bidding (from the server, or the GM's last click). While
+-- Market Mode is ticked the box is drawn unchecked, since nothing bids then; this keeps
+-- the real value to show again when Market Mode is unticked.
+local replayBiddingSaved = true
 local function UpdateReplayBiddingState()
     if not replayBiddingCheckbox or not marketModeCheckbox then
         return
     end
     local text = _G["AHSimReplayBiddingCheckboxText"]
     if marketModeCheckbox:GetChecked() then
+        replayBiddingCheckbox:SetChecked(false)
         replayBiddingCheckbox:Disable()
         text:SetTextColor(0.5, 0.5, 0.5)
         if replayBiddingNote then
@@ -786,6 +791,7 @@ local function UpdateReplayBiddingState()
         end
     else
         replayBiddingCheckbox:Enable()
+        replayBiddingCheckbox:SetChecked(replayBiddingSaved)
         text:SetTextColor(NORMAL_FONT_COLOR.r, NORMAL_FONT_COLOR.g, NORMAL_FONT_COLOR.b)
         if replayBiddingNote then
             replayBiddingNote:SetText(" ")
@@ -900,7 +906,8 @@ function AHSim.BuildExperimentalPage(page)
     -- Greyed out while Market Mode is ticked (UpdateReplayBiddingState).
     replayBiddingCheckbox = AddCheckbox(
         "AHSimReplayBiddingCheckbox", "Replay Bidding (the Replay bot bids and outbids)", function(self)
-            local on = self:GetChecked()
+            local on = self:GetChecked() and true or false
+            replayBiddingSaved = on
             SetConfigAndSave("ReplayBidding", on and "1" or "0",
                 on and "Replay bidding on." or "Replay bidding off -- queued bids dropped.")
         end)
@@ -967,7 +974,8 @@ AHSim:RegisterHandler(OP.CONFIG, function(key, value)
         if marketModeCheckbox then marketModeCheckbox:SetChecked(value == "Market") end
         UpdateReplayBiddingState()
     elseif key == "ReplayBidding" then
-        if replayBiddingCheckbox then replayBiddingCheckbox:SetChecked(value == "1") end
+        replayBiddingSaved = value == "1"
+        UpdateReplayBiddingState()
     elseif key == "MarketBots" then
         if marketBotsBox then marketBotsBox:SetText(value) end
     elseif key == "MarketScale" then
