@@ -40,6 +40,9 @@ DT = 0.5
 CURVE_EDGES = np.array([0.25, 0.5, 0.7, 0.85, 1.0, 1.15, 1.4, 2.0, 3.0, 5.0])
 MB_EDGES = [-1.0, -0.5, -0.25, -0.1, 0.0, 0.1, 0.25, 0.5, 1.0]
 QP = np.array([0.02, 0.10, 0.25, 0.50, 0.75, 0.90, 0.98])
+# MARKET_FORMAT.md: draws stay inside the 5th-95th percentile; price memory per (bot, item).
+DRAW_LO, DRAW_HI = 0.05, 0.95
+MEMORY_WEIGHT, MEMORY_HOURS = 0.75, 72.0
 CUT, DEPOSIT_PER_12H, MIN_DEPOSIT = 0.05, 0.15, 100
 TLEFT_MIN_HOURS = {1: 0.0, 2: 0.5, 3: 2.0, 4: 12.0}
 SNAPSHOT_HOUR, LIQUID_UNITS = 20, 20
@@ -137,7 +140,9 @@ def run(market_path, faction_name, window, scale, n_bots, days, burn_in, demand_
         return m["stack"].get((t, c)) if (t, c) in m["stack"] else m["stack"].get((t, -1), m["stack"][(-1, -1)])
 
     def draw(q):
-        return float(np.interp(rng.random(), QP, q))
+        return float(np.interp(DRAW_LO + (DRAW_HI - DRAW_LO) * rng.random(), QP, q))
+
+    memory = {}  # (bot, item index) -> (per-unit price, hour posted)
 
     # Warm start: the real house before the window, thinned to the scale; owners anonymous (ids after the bots).
     name = FACTION_NAMES[faction]
@@ -181,6 +186,23 @@ def run(market_path, faction_name, window, scale, n_bots, days, burn_in, demand_
         sellers = np.bincount(uniq // n_owners, minlength=n_items)
         cheapest = np.full(n_items, np.inf)
         np.minimum.at(cheapest, L["item"], L["unit"])
+        # Each bot's cheapest own listing per item: the memory's fallback (restarts, fills).
+        bot_rows = L["owner"] < n_bots
+        own_keys = L["owner"][bot_rows] * n_items + L["item"][bot_rows]
+        own_order = np.argsort(own_keys, kind="stable")
+        own_keys_sorted = own_keys[own_order]
+        own_uniq, own_start = np.unique(own_keys_sorted, return_index=True)
+        own_min = (np.minimum.reduceat(L["unit"][bot_rows][own_order], own_start) if len(own_start)
+                   else np.array([]))
+
+        def remembered(bot, item):
+            hit = memory.get((bot, item))
+            if hit and now - hit[1] <= MEMORY_HOURS:
+                return hit[0]
+            k = np.searchsorted(own_uniq, bot * n_items + item)
+            if k < len(own_uniq) and own_uniq[k] == bot * n_items + item:
+                return float(own_min[k])
+            return None
 
         # Posts.
         ev = rng.poisson(b_rate)
@@ -193,6 +215,10 @@ def run(market_path, faction_name, window, scale, n_bots, days, burn_in, demand_
                 off += offsets.get(t, 0.0)
                 base = cheapest[i] if math.isfinite(cheapest[i]) else ref[i]
                 price = base * math.exp(draw(q) + off)
+                bot = int(b_owner[j])
+                prior = remembered(bot, int(i))
+                if prior:
+                    price = math.exp(MEMORY_WEIGHT * math.log(prior) + (1 - MEMORY_WEIGHT) * math.log(price))
                 floor = vendor[i]
                 if i in craft:
                     cost = sum(qty * (cheapest[r] if r is not None and math.isfinite(cheapest[r]) else
@@ -200,6 +226,7 @@ def run(market_path, faction_name, window, scale, n_bots, days, burn_in, demand_
                     floor = max(floor, craft[i][0][2] * cost)
                 tot["floored"] += n * (price < floor)
                 price = max(price, floor)
+                memory[(bot, int(i))] = (price, now)
                 count = min(max(round(conv[i] * math.exp(draw(stack_q(t, c)))), 1), maxc[i])
                 dur = (24.0 if rng.random() < 0.5 else 48.0) if rng.random() < b_tl4[j] else 12.0
                 dep = max(MIN_DEPOSIT, DEPOSIT_PER_12H * vendor[i] * count * dur / 12)
@@ -285,6 +312,13 @@ def run(market_path, faction_name, window, scale, n_bots, days, burn_in, demand_
                 day=pl.lit(int(now // 24)), listings=pl.lit(len(L["item"])),
                 **{f"{k}_cum": pl.lit(float(tot[k])) for k in ("posted", "sold", "buyers", "spent", "floored")}))
 
+    # Same seller, same item: how often its listings' per-unit prices sit far apart (real Lordaeron sellers:
+    # 3-6% of groups above 1.5x, 1-3% above 3x).
+    spread = (pl.DataFrame({"owner": L["owner"], "item": L["item"], "unit": L["unit"]})
+              .filter(pl.col("owner") < n_bots).group_by("owner", "item")
+              .agg(n=pl.len(), r=pl.col("unit").max() / pl.col("unit").min()).filter(pl.col("n") > 1))
+    seller_spread = {"groups": spread.height, "over_1_5x": float((spread["r"] > 1.5).mean()) if spread.height else 0.0,
+                     "over_3x": float((spread["r"] > 3).mean()) if spread.height else 0.0}
     if not write:
         return {"type_gold": dict(type_gold), "totals": dict(tot), "days": days,
                 "agent_gold": agent.gold if agent is not None else None, "daily": pl.concat(daily)}
@@ -321,6 +355,7 @@ def run(market_path, faction_name, window, scale, n_bots, days, burn_in, demand_
         "listings_median": float(sim["listings"].median()), "seconds": round(time.time() - t0),
         "bot_gold_total": float(gold.sum()), "bot_gold_min": float(gold.min()),
         "type_gold": {str(k): v for k, v in type_gold.items()},
+        "seller_spread": seller_spread,
         "scores": {tier: {"units": score("s_units_med", "units_med", liquid=liq),
                           "price": score("s_price_med", "price_med", liquid=liq),
                           "min_med": score("s_min_med", "min_med", liquid=liq),
