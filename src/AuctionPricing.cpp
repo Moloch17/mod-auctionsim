@@ -375,6 +375,15 @@ namespace AuctionPricing
         return vendorBuyPrice == 0 || pricePerItem <= vendorBuyPrice;
     }
 
+    uint32 VendorUnitBuyPrice(uint32 buyPrice, uint32 buyCount)
+    {
+        if (buyPrice == 0)
+        {
+            return 0;
+        }
+        return std::max(1u, buyPrice / std::max(1u, buyCount));
+    }
+
     bool IsBuyableQuality(uint32 quality)
     {
         return quality != 0;  // 0 == ITEM_QUALITY_POOR (grey)

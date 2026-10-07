@@ -131,10 +131,16 @@ namespace AuctionPricing
 
     // Buy-side anti-cheese guard: players can acquire vendor-stocked goods cheaply
     // and relist them, so the bot must never pay more per unit than it would cost to
-    // buy the same item straight from a vendor (ItemTemplate::BuyPrice, the merchant
-    // purchase price). Equal price still buys; vendorBuyPrice == 0 (item has no
+    // buy the same item straight from a vendor (VendorUnitBuyPrice, the merchant
+    // price of one). Equal price still buys; vendorBuyPrice == 0 (item has no
     // vendor purchase price -- e.g. a world drop or enchant) disables the check.
     bool IsWithinVendorBuyPrice(uint32 pricePerItem, uint32 vendorBuyPrice);
+
+    // What a vendor charges for one item: ItemTemplate::BuyPrice buys BuyCount of them
+    // at once (5 Enchanted Vials for 5g, 200 arrows for 10 copper), so one costs
+    // BuyPrice / BuyCount, rounded down but at least 1 copper (0 would disable the cap).
+    // 0 when buyPrice is 0.
+    uint32 VendorUnitBuyPrice(uint32 buyPrice, uint32 buyCount);
 
     // Buy-side quality gate: the bot never buys poor-quality (grey) items --
     // ITEM_QUALITY_POOR == 0 -- since they are vendor trash and only surface on the

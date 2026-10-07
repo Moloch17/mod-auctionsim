@@ -8,6 +8,7 @@
 #include <unordered_set>
 #include <vector>
 #include "AuctionHouseMgr.h"
+#include "AuctionPricing.h"
 #include "ItemTemplate.h"
 #include "ScannedItem.h"
 
@@ -65,12 +66,24 @@ public:
     static bool ParseMode(std::string_view text, bool& outMarket);
     static char const* ModeName(bool market) { return market ? "Market" : "Replay"; }
 
-    // Every item id stocked by at least one vendor (from npc_vendor). The buy-side
-    // vendor-buy-price guard only applies to items in this set: an
-    // ItemTemplate::BuyPrice left on an item that no vendor actually sells is stale
-    // DB data and must not block an otherwise-good purchase.
+    // Every item id stocked by at least one vendor (from npc_vendor) in unlimited
+    // quantity for gold only. The buy-side vendor-buy-price guard only applies to
+    // items in this set: an ItemTemplate::BuyPrice left on an item that no vendor
+    // actually sells is stale DB data and must not block an otherwise-good purchase,
+    // and neither must a price that buys only a few at a time (maxcount) or that also
+    // costs tokens (ExtendedCost).
     std::unordered_set<uint32> vendorSoldItems;
     bool IsVendorSold(uint32 itemId) const { return vendorSoldItems.count(itemId) > 0; }
+
+    // The most the bot pays per unit for the item, by buyout or by bid, in Replay and
+    // Market mode alike (AuctionPricing::IsWithinVendorBuyPrice): the vendor's price for
+    // one if a vendor stocks it (BuyPrice buys BuyCount of them), else 0 (no cap).
+    uint32 VendorBuyCap(ItemTemplate const* proto) const
+    {
+        return (IsVendorSold(proto->ItemId) && proto->BuyPrice > 0)
+            ? AuctionPricing::VendorUnitBuyPrice(static_cast<uint32>(proto->BuyPrice), proto->BuyCount)
+            : 0;
+    }
 
     // ScannedItem storage. A std::deque, not a vector: the ScannedItem* kept in
     // ItemSelectionTable / ItemIndex must stay valid as rows are appended, and a

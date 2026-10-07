@@ -352,12 +352,16 @@ void ASConfig::LoadMasks()
     }
 }
 
-// Every item id stocked by a vendor. Negative npc_vendor.item rows are references
+// Every item id stocked by a vendor in unlimited quantity for gold only
+// (maxcount 0, no ExtendedCost: with an ExtendedCost the core charges the tokens
+// instead of BuyPrice, or both for an ITEM_FLAG2_DONT_IGNORE_BUY_PRICE item, so
+// BuyPrice isn't what the item costs). Negative npc_vendor.item rows are references
 // to other npc_vendor rows, whose own positive item ids this DISTINCT scan already
 // covers, so one query is enough.
 void ASConfig::LoadVendorItems()
 {
-    QueryResult result = WorldDatabase.Query("SELECT DISTINCT item FROM npc_vendor WHERE item > 0");
+    QueryResult result = WorldDatabase.Query(
+        "SELECT DISTINCT item FROM npc_vendor WHERE item > 0 AND maxcount = 0 AND ExtendedCost = 0");
     if (!result)
     {
         return;
@@ -368,7 +372,7 @@ void ASConfig::LoadVendorItems()
         vendorSoldItems.insert(result->Fetch()[0].Get<uint32>());
     } while (result->NextRow());
 
-    LOG_INFO("module", "AuctionSim: {} distinct vendor-sold items loaded", vendorSoldItems.size());
+    LOG_INFO("module", "AuctionSim: {} distinct items vendors sell in unlimited stock for gold loaded", vendorSoldItems.size());
 }
 
 uint64_t ASConfig::IndexKey(size_t house, uint32 itemClass, uint32 quality, uint32 itemID)

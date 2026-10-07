@@ -15,6 +15,7 @@
 #include "Bot.h"
 #include "CharacterCache.h"
 #include "CraftedItems.h"
+#include "DatabaseEnv.h"
 #include "Item.h"
 #include "MarketBots.h"
 #include "MarketData.h"
@@ -550,6 +551,78 @@ namespace
             return Fail("IsWithinVendorBuyPrice boundary", "price above the vendor buy price was accepted");
         }
         return Pass("IsWithinVendorBuyPrice boundary");
+    }
+
+    TestResult TestVendorUnitBuyPrice()
+    {
+        struct Case
+        {
+            uint32 buyPrice, buyCount, want;
+        };
+        Case const cases[] = {
+            {500, 1, 500},
+            {50000, 5, 10000},  // Enchanted Vial: 5 for 5g
+            {16000, 5, 3200},
+            {100, 3, 33},       // rounded down: never above what the vendor charges
+            {10, 200, 1},       // 200 arrows for 10 copper: at least 1, 0 would lift the cap
+            {500, 0, 500},      // no BuyCount in the template: one per purchase
+            {0, 5, 0},          // no vendor price: no cap
+        };
+        for (Case const& c : cases)
+        {
+            uint32 got = AuctionPricing::VendorUnitBuyPrice(c.buyPrice, c.buyCount);
+            if (got != c.want)
+            {
+                return Fail(
+                    "VendorUnitBuyPrice",
+                    Acore::StringFormat("{} for {}: got {}, want {}", c.buyPrice, c.buyCount, got, c.want));
+            }
+        }
+        return Pass("VendorUnitBuyPrice");
+    }
+
+    // The vendor cap counts only unlimited, gold-only npc_vendor rows (issue #6): an
+    // item whose every row has a stock limit (maxcount) or a token cost (ExtendedCost)
+    // must not be capped, and an item with an unlimited gold row must be.
+    TestResult TestVendorCapRows(ASConfig const& config)
+    {
+        QueryResult limited = WorldDatabase.Query(
+            "SELECT item FROM npc_vendor WHERE item > 0 GROUP BY item "
+            "HAVING SUM(maxcount = 0 AND ExtendedCost = 0) = 0");
+        uint32 limitedCount = 0;
+        if (limited)
+        {
+            do
+            {
+                uint32 itemId = limited->Fetch()[0].Get<uint32>();
+                if (config.IsVendorSold(itemId))
+                {
+                    return Fail("Vendor cap rows", Acore::StringFormat(
+                        "item {} is sold only in limited stock or for tokens but is capped (npc_vendor changed "
+                        "since startup?)",
+                        itemId));
+                }
+                limitedCount++;
+            } while (limited->NextRow());
+        }
+
+        QueryResult unlimited = WorldDatabase.Query(
+            "SELECT item FROM npc_vendor WHERE item > 0 AND maxcount = 0 AND ExtendedCost = 0 ORDER BY item LIMIT 1");
+        if (unlimited)
+        {
+            uint32 itemId = unlimited->Fetch()[0].Get<uint32>();
+            if (!config.IsVendorSold(itemId))
+            {
+                return Fail("Vendor cap rows",
+                    Acore::StringFormat(
+                        "item {} is sold in unlimited stock for gold but is not capped (npc_vendor changed since "
+                        "startup?)",
+                        itemId));
+            }
+        }
+        return Pass("Vendor cap rows",
+            Acore::StringFormat("{} limited/token-only items uncapped, {} capped", limitedCount,
+                config.vendorSoldItems.size()));
     }
 
     TestResult TestIsBuyableQuality()
@@ -2368,6 +2441,8 @@ namespace AuctionSimTests
             TestWeightedPick(),
             TestIsWithinLevelCapBoundary(),
             TestIsWithinVendorBuyPriceBoundary(),
+            TestVendorUnitBuyPrice(),
+            TestVendorCapRows(config),
             TestIsBuyableQuality(),
             TestBuyQueuePopulatesOnQualifyingPrice(bot),
             TestBuyQueueDedupesRescan(bot),
