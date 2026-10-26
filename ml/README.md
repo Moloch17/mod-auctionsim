@@ -20,9 +20,9 @@ under `nice` since the box also hosts the worldserver. Stage 0 reads AzerothCore
 | 0 | `s0_item_template.py` | AC item_template.sql | `item_template.parquet` (vendor prices, stack sizes) |
 | 1a | `s1_extract_scans.py` | scans | `auctions/<faction>/<scan_time>.parquet`, `snapshots.parquet` |
 | 1b | `s1_extract_nerfed.py` | nerfed/raw | `nerfed_history.parquet`, `nerfed_items.parquet` |
-| 2 | `s2_transitions.py` | 1a | `market/<faction>/<t>.parquet`, `transitions/<faction>/<t0>.parquet` |
-| 3 | `s3_sellers.py` | 2 | `s3/`: posts, seller profiles and types, price/stack model |
-| 4 | `s4_demand.py` | 2, 3 | `s4/`: sell-through hazard by class x price, check vs short gaps |
+| 2 | `s2_transitions.py` | 1a | `market/<faction>/<t>.parquet`, `transitions/<faction>/<t0>.parquet`, `transitions_thin/` (day-apart pairs of the 6-hourly scans) |
+| 3 | `s3_sellers.py` | 2 | `s3/`: posts (with cadence weight `w`), `post_factors`, seller profiles and types, price/stack model |
+| 4 | `s4_demand.py` | 2, 3 | `s4/`: sell-through hazard by class x price, `sale_factors`, check 6-hourly vs day-apart on the same days |
 | 5 | `s5_targets.py`, `s5_sim.py`, `s5_tune.py` | 0, 1b, 3, 4 | `s5/`: targets (train/tune/holdout windows), simulator runs, demand-scale tuning |
 | 6 | `s6_export.py`, `s6_market_sim.py`, `s6_tune.py`, `s6_realism.py` | 0-5 | `s6/`: Market mode file (`MARKET_FORMAT.md`), its reference runtime, tuning, real-vs-sim classifier |
 | 7 | `s7_exploit.py`, `s7_rl.py` | 6 | `s7/`: scripted players against the market, RL price offsets (accepted only if realism holds) |
