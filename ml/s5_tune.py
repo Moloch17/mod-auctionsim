@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Stage 5c: tune the simulator's demand scale, then score it once on the holdout.
 
-Stage 4's sales estimates come from daily snapshots, and the Sept 2025 short
-gaps put the true sale rate 2.5-3x higher at normal prices, so the absolute
-demand level is a free parameter. For each faction, s5_sim runs on the `tune`
+Stage 4's sales estimates are calibrated for scan cadence (6-hourly pairs as
+measured, daily pairs times a cadence factor, about 2.4x), but buyers who
+substitute or wait are not modelled, so the absolute demand level stays a
+free parameter. For each faction, s5_sim runs on the `tune`
 window (the 90 days before the holdout) at every scale in GRID, in parallel;
 the scale with the lowest loss is then run once on `holdout`.
 

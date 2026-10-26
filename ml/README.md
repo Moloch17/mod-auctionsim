@@ -48,14 +48,23 @@ population.
 ## v1 limits
 
 - **No auction ids.** Auctions are matched across snapshots by (seller, item, suffix, enchant, count, minbid,
-  buyout). A seller reposting an identical listing looks like one that persisted.
-- **Daily snapshots.** Anything posted and gone within a day is missed. The buyer model separates sales from
-  expiries statistically: listings priced at 2x reference or more set the expiry baseline. The Sept 2025 scans,
-  a few hours apart, are the check. The 6-hourly scans dl-data.sh now keeps will replace this once a few weeks
-  have accumulated.
+  buyout). A seller reposting an identical listing looks like one that persisted. Auctioneer often lacks a seller's
+  name in one scan and has it in the next, which split one auction into a sale plus a new post (18-44% of removals
+  between 6-hourly scans); stage 2 names those empty sellers from the other scan of the pair (`KEY_VERSION`).
+- **Scan cadence.** The site's scans were kept daily until 2026-10-02 and every 6 hours since (dl-data.sh, cron
+  `0 */6 * * *`). A daily pair misses anything posted and gone within the day: measured over the same days, the
+  6-hourly pairs see about 1.6x the posts and 2.4x the sales. Stage 4 fits sale rates on the 6-hourly pairs (a listing with 12-48 h left gone within 6 h was not an
+  expiry); listings at 2x reference or more still set a non-sale floor, now cancels rather than expiries. Daily-era
+  posts and sales are scaled by cadence factors per faction and item class, measured on the same 6-hourly days
+  seen both ways (stage 2's `transitions_thin`).
 - **Seller types** are k-means clusters of each seller's habits. The price and stack models are gradient boosting
   plus sampled residuals, not a learned policy yet; bots don't react to their own sales or gold.
-- **Sale levels**: daily snapshots put sales 2.5-3x below the Sept 2025 short gaps, hence the tuned demand scale.
+- **Sale levels**: the Sept 2025 short gaps put daily-snapshot sales 2.5-3x too low, which a demand scale of 3
+  absorbed. That check was inflated by the empty-seller split above (per listing, the repaired gap is 1.0-1.6x), but
+  the total is still about 2.4x, mostly listings a daily pair never sees. It is now corrected in the data, so the
+  tuned demand scale only covers what the model leaves out.
+- **Weekday pattern and seller types** still rest mostly on the daily era: the 6-hourly scans cover too few weeks to
+  replace them on their own.
 - **The simulator** (stage 5) has no crafting links; Market mode (stage 6) has crafting price floors. Buyers do not
   substitute between items.
 - **Small markets**: at `Market.Scale` 0.1 an item is up about half as often as on Lordaeron and moves more.

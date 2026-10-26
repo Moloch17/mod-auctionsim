@@ -30,8 +30,11 @@ from common import ML, OUT
 
 S6 = OUT / "s6"
 TILTS = [1.0, 1.5, 2.0]
-SUPPLY = [1.0, 1.5, 2.0]
-DEMAND = [1.0, 2.0, 3.0]
+# Wide enough that the pick is not at an edge: the daily-era rates are now
+# calibrated for scan cadence (stages 3-4), so the old picks (supply 1.5,
+# demand 3.0, the top of [1, 2, 3]) no longer carry that correction.
+SUPPLY = [0.5, 0.75, 1.0, 1.5]
+DEMAND = [1.0, 1.5, 2.0, 3.0, 4.0]
 PARALLEL = int(os.environ.get("ML_WORKERS", "8"))
 ENV = dict(os.environ, OMP_NUM_THREADS="1", POLARS_MAX_THREADS="2")
 
@@ -113,6 +116,11 @@ def main():
         report = "\n".join([
             f"best tilt {best_tilt}; horde supply {best['horde']['supply']} demand {best['horde']['demand']}; "
             f"alliance supply {best['alliance']['supply']} demand {best['alliance']['demand']}",
+            *[f"WARNING: {f} {k} {best[f][k]} is at the edge of the grid {g}"
+              for f in ("horde", "alliance") for k, g in (("supply", SUPPLY), ("demand", DEMAND))
+              if best[f][k] in (min(g), max(g))],
+            *([f"WARNING: tilt {best_tilt} is at the edge of the grid {TILTS}"]
+              if best_tilt == max(TILTS) else []),
             "bias = median log(sim/real) (presence: sim - real); rank = rank correlation across items",
             "", "holdout (never seen in tuning):", str(table.filter(pl.col("window") == "holdout").select(cols)),
             "", "tune window, 8 best per faction:",
