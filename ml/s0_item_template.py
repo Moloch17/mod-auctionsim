@@ -44,6 +44,7 @@ def main():
             i = j + 1
     df = pl.DataFrame(rows, schema=list(KEEP.values()), orient="row").with_columns(
         [pl.col(c).cast(pl.Int64) for c in KEEP.values() if c != "name"])
+    OUT.mkdir(parents=True, exist_ok=True)
     df.write_parquet(OUT / "item_template.parquet")
     print(f"{df.height} items, {df.filter(pl.col('sell_price') > 0).height} with a vendor price")
 
