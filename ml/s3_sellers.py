@@ -5,13 +5,26 @@ Inputs: out/transitions, out/market, out/auctions (stages 1-2).
 
 Every listing key that is new at t1 (new > 0) is a posting decision, made
 against the market at t0. Daily snapshots miss anything posted and gone
-within the gap, and an own-repost of an identical key looks like a persisted
-auction; both are v1 limits.
+within the gap (about half of all posts, measured on the 6-hourly scans), so
+each post carries a weight `w`: 1 from pairs at most common.WEIGHT_GAP_H
+apart, else the cadence factor of its faction and class (common.cadence_factors:
+6-hourly posts per hour over the same days' day-apart posts per hour). Counts
+of posts below are sums of `new * w`. An own-repost of an identical key still
+looks like a persisted auction (a v1 limit).
+
+Seller activity is counted in days, not snapshots, so the 6-hourly era's four
+snapshots a day don't outweigh the daily era. A post's duration share
+(`tl4_share`: still TLEFT 4, over 12 h left, when first seen) is taken from
+short-gap pairs where there are any: seen within ~6 h, a 12 h post is always
+TLEFT 3 and a 24 h or 48 h post always TLEFT 4, which is exactly the share of
+24/48 h posts the simulators draw. Seen a day later, most 24 h posts have
+dropped to TLEFT 3 and the share reads low.
 
 Outputs (out/s3/):
   items.parquet     item -> itype, isub, quality, ilevel, ulevel, name
+  post_factors.parquet  cadence factors (faction, itype; itype null = pooled)
   posts.parquet     one row per (t1, seller, item, count, minbid, buyout) with
-                    new count, price ratios and market context:
+                    new count, weight w, price ratios and market context:
                       ratio_min  unit buyout / cheapest unit buyout at t0
                       ratio_ref  unit buyout / the item's reference price at
                                  t0 (common.add_reference: rolling median of
@@ -41,7 +54,7 @@ from sklearn.cluster import KMeans
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler
 
-from common import FACTION_NAMES, OUT, add_reference
+from common import (FACTION_NAMES, OUT, SHORT_GAP_H, add_reference, apply_factor, cadence_factors)
 
 S3 = OUT / "s3"
 TYPES = 6
@@ -53,6 +66,29 @@ def items_dim():
     return (pl.scan_parquet(OUT / "auctions" / "*" / "*.parquet")
             .select("item", "itype", "isub", "quality", "ilevel", "ulevel", "name")
             .group_by("item").agg(pl.all().first()).collect())
+
+
+def transitions(kind, faction):
+    return (pl.scan_parquet(OUT / kind / FACTION_NAMES[faction] / "*.parquet")
+            .with_columns(faction=pl.lit(faction, pl.Int8)))
+
+
+def post_factors(items):
+    thin_dir = OUT / "transitions_thin"
+    if not any(thin_dir.glob("*/*.parquet")):
+        return pl.DataFrame(schema={"faction": pl.Int8, "itype": pl.String, "factor": pl.Float64,
+                                    "n_short": pl.Int64, "n_thin": pl.Int64})
+    fs = [f for f in FACTION_NAMES if any((thin_dir / FACTION_NAMES[f]).glob("*.parquet"))]
+    short = pl.concat([transitions("transitions", f).filter(pl.col("gap_h") <= SHORT_GAP_H) for f in fs])
+    thin = pl.concat([transitions("transitions_thin", f) for f in fs])
+    return cadence_factors(short, thin, pl.col("new").cast(pl.Int64), items.select("item", "itype"))
+
+
+def short_first(num, den):
+    """num/den over short-gap rows where they have any den, else over all rows."""
+    short = pl.col("gap_h") <= SHORT_GAP_H
+    d_short = den.filter(short).sum()
+    return pl.when(d_short > 0).then(num.filter(short).sum() / d_short).otherwise(num.sum() / den.sum())
 
 
 def posts_for(faction):
@@ -84,11 +120,12 @@ def posts_for(faction):
 
 
 def seller_features(posts, items):
-    p = posts.filter(pl.col("seller") != "").join(items.select("item", "itype"), on="item", how="left")
-    snaps = p.group_by("faction").agg(pl.col("t1").n_unique().alias("snaps"))
+    p = (posts.filter(pl.col("seller") != "").join(items.select("item", "itype"), on="item", how="left")
+         .with_columns(day=pl.col("t1") // 86400))
+    snaps = p.group_by("faction").agg(pl.col("day").n_unique().alias("snaps"))
     f = (p.group_by("faction", "seller").agg(
-            posts=pl.col("new").sum(),
-            active=pl.col("t1").n_unique(),
+            posts=(pl.col("new") * pl.col("w")).sum(),
+            active=pl.col("day").n_unique(),
             items=pl.col("item").n_unique(),
             classes=pl.col("itype").n_unique(),
             top_class=pl.col("itype").mode().first(),
@@ -98,7 +135,7 @@ def seller_features(posts, items):
             bid_only_share=(pl.col("buyout") == 0).mean(),
             med_bid_ratio=pl.col("bid_ratio").median(),
             med_count=pl.col("count").median(),
-            tl4_share=(pl.col("n1_tl4").sum() / pl.col("new").sum()),
+            tl4_share=short_first(pl.col("n1_tl4"), pl.col("new")),
             med_unit=pl.col("unit").median(),
          ).join(snaps, on="faction")
          .with_columns(active_share=pl.col("active") / pl.col("snaps"),
@@ -171,9 +208,14 @@ def main():
     S3.mkdir(parents=True, exist_ok=True)
     items = items_dim()
     items.write_parquet(S3 / "items.parquet")
+    factors = post_factors(items)
+    factors.write_parquet(S3 / "post_factors.parquet")
     posts = pl.concat([posts_for(f) for f in FACTION_NAMES], how="vertical_relaxed")
+    posts = (apply_factor(posts.lazy().join(items.lazy().select("item", "itype"), on="item", how="left"),
+                          factors).drop("itype").collect())
     posts.write_parquet(S3 / "posts.parquet")
-    print(f"{posts.height} posting rows, {posts['new'].sum()} new auctions", file=sys.stderr)
+    print(f"{posts.height} posting rows, {posts['new'].sum()} new auctions "
+          f"({(posts['new'] * posts['w']).sum():.0f} weighted)", file=sys.stderr)
 
     sellers, km = cluster(seller_features(posts, items))
     sellers.write_parquet(S3 / "sellers.parquet")
@@ -188,12 +230,12 @@ def main():
     stack, stack_resid, stack_score = fit(df.filter(pl.col("y_stack").is_finite()), "y_stack", cutoff)
 
     types = (df.group_by("faction", "type", "itype")
-             .agg(posts=pl.col("new").sum(), sellers=pl.col("seller").n_unique(),
-                  tl4_share=pl.col("n1_tl4").sum() / pl.col("new").sum(),
+             .agg(posts=(pl.col("new") * pl.col("w")).sum(), sellers=pl.col("seller").n_unique(),
+                  tl4_share=short_first(pl.col("n1_tl4"), pl.col("new")),
                   med_bid_ratio=pl.col("bid_ratio").median(), med_ratio_min=pl.col("ratio_min").median(),
                   undercut_share=pl.col("undercut").mean())
-             .join(df.group_by("faction").agg(snaps=pl.col("t1").n_unique()), on="faction")
-             .with_columns(posts_per_snapshot_per_seller=pl.col("posts") / pl.col("snaps") / pl.col("sellers")))
+             .join(df.group_by("faction").agg(days=(pl.col("t1") // 86400).n_unique()), on="faction")
+             .with_columns(posts_per_day_per_seller=pl.col("posts") / pl.col("days") / pl.col("sellers")))
     types.write_parquet(S3 / "types.parquet")
     with open(S3 / "price_model.pkl", "wb") as f:
         pickle.dump({"features": FEATURES, "itype_codes": itype_codes, "price_min": price_min,
@@ -208,7 +250,10 @@ def main():
         pl.col("top_class").mode().first()).sort("posts", descending=True))
     with pl.Config(tbl_cols=-1, tbl_width_chars=200):
         report = "\n".join([
-            f"posting rows {posts.height}, new auctions {posts['new'].sum()}",
+            f"posting rows {posts.height}, new auctions {posts['new'].sum()}, "
+            f"weighted for cadence {(posts['new'] * posts['w']).sum():.0f}",
+            "cadence factors (6-hourly posts per hour over day-apart, same days; itype null = pooled):",
+            str(factors.sort("faction", "itype", nulls_last=True)), "",
             f"named sellers {sellers.height}, clustered (>= {MIN_POSTS} posts) {sellers['type'].is_not_null().sum()}",
             "", "seller types:", str(summary), "",
             f"held out: the last {HOLDOUT_DAYS} days",

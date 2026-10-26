@@ -13,7 +13,8 @@ out/s5/targets.parquet.
 * Warm start: the real AH (those items) at the last snapshot before the
   start; remaining time drawn inside each TLEFT bucket.
 * Bots: every seller of those items (empty names pooled as one), each posting
-  each item as a Poisson process at the rate it did over RATE_DAYS. Price =
+  each item as a Poisson process at the rate it did over RATE_DAYS (posts
+  weighted for scan cadence, stage 3's `w`). Price =
   the cheapest listing up x exp(stage-3 model + a residual drawn from the
   seller's own type), or reference x exp(...) when nothing is up; never below
   the item's vendor sell price (real posts go under it 0.14% of the time).
@@ -66,7 +67,7 @@ def load(faction, start):
     template = pl.read_parquet(OUT / "item_template.parquet")
     items_dim = pl.read_parquet(S3 / "items.parquet")
 
-    rates = (posts.group_by("seller", "item").agg(n=pl.col("new").sum())
+    rates = (posts.group_by("seller", "item").agg(n=(pl.col("new") * pl.col("w")).sum())
              .join(sellers.select("seller", "type", "tl4_share"), on="seller", how="left")
              .with_columns(rate_h=pl.col("n") / (RATE_DAYS * 24), type=pl.col("type").fill_null(-1),
                            tl4_share=pl.col("tl4_share").fill_null(0.6)))

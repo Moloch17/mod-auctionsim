@@ -19,7 +19,9 @@ take that window's start from out/s5/targets.parquet.
   (letters only, 2-12 chars, no letter three times running), unique across
   both factions.
 * BASKET: each item's posting events per hour over RATE_DAYS, per seller type
-  (an event is one seller posting one listing key, batch = listings in it),
+  (an event is one seller posting one listing key, batch = listings in it;
+  events weighted for scan cadence by stage 3's `w`; the 24/48 h duration
+  share from short-gap pairs where the item has any, see s3_sellers),
   split evenly over up to BOTS_PER_ITEM bots of that type (fewer if the item
   had fewer sellers of it), picked by item so baskets differ. More would only
   grow the file: at a realm's scale an item rarely has more owners up at once.
@@ -29,6 +31,11 @@ take that window's start from out/s5/targets.parquet.
 * CRAFT: reagents from the nerfed pages; margin = the 10th percentile of the
   item's cheapest buyout over its cost price, clipped to [0.5, 1].
 * --offsets: a parquet of (faction, type, class, mb, offset) learned in stage 7.
+
+Lookahead: the cadence factors (stages 3 and 4) and, once enough 6-hourly
+pairs exist, stage 4's curves are measured on the 6-hourly scans, which are
+newer than the tune and holdout windows. An export as of those windows uses
+them anyway: they correct how the daily scans were taken, not the market.
 """
 
 import argparse
@@ -39,7 +46,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from common import FACTION_NAMES, OUT, add_reference
+from common import FACTION_NAMES, OUT, SHORT_GAP_H, add_reference
 
 SCHEMA = 1
 RATE_DAYS = 60
@@ -201,7 +208,7 @@ def export(asof, out, demand_scale, supply_scale, tilt, offsets_path):
                 lines["CRAFT"].append(f"{faction}:{r['item']}:{r['reagent']}:{r['qty']}:{m:.3f}")
 
         # BOT: names per type, by posting volume.
-        vol = window.group_by("type").agg(v=pl.col("new").sum()).sort("v", descending=True)
+        vol = window.group_by("type").agg(v=(pl.col("new") * pl.col("w")).sum()).sort("v", descending=True)
         share = dict(zip(vol["type"].to_list(), (vol["v"] / vol["v"].sum()).to_list()))
         n_type = {t: max(1, math.floor(s * BOTS)) for t, s in share.items()}
         while sum(n_type.values()) > BOTS:
@@ -209,7 +216,8 @@ def export(asof, out, demand_scale, supply_scale, tilt, offsets_path):
         rest = sorted(share, key=lambda t: share[t] * BOTS - n_type[t], reverse=True)
         for t in rest[:BOTS - sum(n_type.values())]:
             n_type[t] += 1
-        ranked = (window.filter(pl.col("seller") != "").group_by("seller", "type").agg(v=pl.col("new").sum())
+        ranked = (window.filter(pl.col("seller") != "").group_by("seller", "type")
+                  .agg(v=(pl.col("new") * pl.col("w")).sum())
                   .sort("v", descending=True))
         bots, spare_pool = [], []
         for t, k in n_type.items():
@@ -237,7 +245,11 @@ def export(asof, out, demand_scale, supply_scale, tilt, offsets_path):
         # BASKET: per (item, type) events/hour, batch and duration mix, spread over that type's bots.
         ev = (window.filter(pl.col("item").is_in(list(traded)))
               .group_by("item", "type")
-              .agg(events=pl.len(), listings=pl.col("new").sum(), tl4=pl.col("n1_tl4").sum(),
+              .agg(events=pl.col("w").sum(), listings=(pl.col("new") * pl.col("w")).sum(),
+                   tl4=pl.when((pl.col("gap_h") <= SHORT_GAP_H).any())
+                   .then(pl.col("n1_tl4").filter(pl.col("gap_h") <= SHORT_GAP_H).sum()
+                         / pl.col("new").filter(pl.col("gap_h") <= SHORT_GAP_H).sum())
+                   .otherwise(pl.col("n1_tl4").sum() / pl.col("new").sum()),
                    sellers=pl.col("seller").n_unique()))
         rows = 0
         for r in ev.iter_rows(named=True):
@@ -245,7 +257,7 @@ def export(asof, out, demand_scale, supply_scale, tilt, offsets_path):
             m = max(1, min(len(group), r["sellers"], BOTS_PER_ITEM))
             rate = r["events"] / (RATE_DAYS * 24) / m
             batch = r["listings"] / r["events"]
-            tl4 = min(1.0, r["tl4"] / max(r["listings"], 1))
+            tl4 = min(1.0, max(0.0, r["tl4"]))
             start = (r["item"] * 2654435761) % len(group)
             for j in range(m):
                 b = group[(start + j) % len(group)]
